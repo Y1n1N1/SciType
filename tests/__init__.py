@@ -1,0 +1,2 @@
+"""SciType test suite."""
+

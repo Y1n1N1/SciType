@@ -1,0 +1,230 @@
+[
+  {
+    "id": "literal.slash",
+    "name": "普通斜杠",
+    "category": "结构输入",
+    "output": "/"
+  },
+  {
+    "id": "greek.phi.lower",
+    "name": "小写斐（phi）",
+    "category": "希腊字母",
+    "output": "φ"
+  },
+  {
+    "id": "structure.absolute",
+    "name": "绝对值",
+    "category": "结构输入",
+    "output": "|${cursor}|"
+  },
+  {
+    "id": "calculus.integral_dx",
+    "name": "积分（带 dx 输入位）",
+    "category": "结构输入",
+    "output": "∫${cursor}dx"
+  },
+  {
+    "id": "structure.square_root_parenthesized",
+    "name": "带括号根号",
+    "category": "结构输入",
+    "output": "√(${cursor})"
+  },
+  {
+    "id": "relation.infinity",
+    "name": "无穷",
+    "category": "比较与关系",
+    "output": "∞"
+  },
+  {
+    "id": "relation.less_equal",
+    "name": "小于等于",
+    "category": "比较与关系",
+    "output": "≤"
+  },
+  {
+    "id": "relation.greater_equal",
+    "name": "大于等于",
+    "category": "比较与关系",
+    "output": "≥"
+  },
+  {
+    "id": "relation.not_equal",
+    "name": "不等于",
+    "category": "比较与关系",
+    "output": "≠"
+  },
+  {
+    "id": "relation.approximately_equal",
+    "name": "约等于",
+    "category": "比较与关系",
+    "output": "≈"
+  },
+  {
+    "id": "relation.proportional",
+    "name": "正比于",
+    "category": "比较与关系",
+    "output": "∝"
+  },
+  {
+    "id": "relation.right_arrow",
+    "name": "右箭头",
+    "category": "比较与关系",
+    "output": "→"
+  },
+  {
+    "id": "logic.implies",
+    "name": "蕴含",
+    "category": "比较与关系",
+    "output": "⇒"
+  },
+  {
+    "id": "logic.equivalent",
+    "name": "等价",
+    "category": "比较与关系",
+    "output": "⇔"
+  },
+  {
+    "id": "calculus.summation",
+    "name": "求和",
+    "category": "运算与微积分",
+    "output": "∑"
+  },
+  {
+    "id": "calculus.product",
+    "name": "连乘",
+    "category": "运算与微积分",
+    "output": "∏"
+  },
+  {
+    "id": "calculus.partial",
+    "name": "偏导符号",
+    "category": "运算与微积分",
+    "output": "∂"
+  },
+  {
+    "id": "calculus.nabla",
+    "name": "Nabla",
+    "category": "运算与微积分",
+    "output": "∇"
+  },
+  {
+    "id": "operator.plus_minus",
+    "name": "正负号",
+    "category": "运算与微积分",
+    "output": "±"
+  },
+  {
+    "id": "operator.multiply",
+    "name": "乘号",
+    "category": "运算与微积分",
+    "output": "×"
+  },
+  {
+    "id": "operator.divide",
+    "name": "除号",
+    "category": "运算与微积分",
+    "output": "÷"
+  },
+  {
+    "id": "operator.middle_dot",
+    "name": "中点",
+    "category": "运算与微积分",
+    "output": "·"
+  },
+  {
+    "id": "unit.degree",
+    "name": "度数符号",
+    "category": "运算与微积分",
+    "output": "°"
+  },
+  {
+    "id": "set.element_of",
+    "name": "属于",
+    "category": "集合与逻辑",
+    "output": "∈"
+  },
+  {
+    "id": "set.not_element_of",
+    "name": "不属于",
+    "category": "集合与逻辑",
+    "output": "∉"
+  },
+  {
+    "id": "set.empty",
+    "name": "空集",
+    "category": "集合与逻辑",
+    "output": "∅"
+  },
+  {
+    "id": "set.intersection",
+    "name": "交集",
+    "category": "集合与逻辑",
+    "output": "∩"
+  },
+  {
+    "id": "set.union",
+    "name": "并集",
+    "category": "集合与逻辑",
+    "output": "∪"
+  },
+  {
+    "id": "logic.for_all",
+    "name": "任意",
+    "category": "集合与逻辑",
+    "output": "∀"
+  },
+  {
+    "id": "logic.exists",
+    "name": "存在",
+    "category": "集合与逻辑",
+    "output": "∃"
+  },
+  {
+    "id": "constant.pi",
+    "name": "圆周率",
+    "category": "常用常数",
+    "output": "π"
+  },
+  {
+    "id": "greek.gamma.lower",
+    "name": "小写伽马（gamma）",
+    "category": "希腊字母",
+    "output": "γ"
+  },
+  {
+    "id": "greek.gamma.upper",
+    "name": "大写伽马（Gamma）",
+    "category": "希腊字母",
+    "output": "Γ"
+  },
+  {
+    "id": "greek.sigma.lower",
+    "name": "小写西格玛（sigma）",
+    "category": "希腊字母",
+    "output": "σ"
+  },
+  {
+    "id": "greek.sigma.upper",
+    "name": "大写西格玛（Sigma）",
+    "category": "希腊字母",
+    "output": "Σ"
+  },
+  {
+    "id": "greek.phi.upper",
+    "name": "大写斐（Phi）",
+    "category": "希腊字母",
+    "output": "Φ"
+  },
+  {
+    "id": "greek.omega.lower",
+    "name": "小写欧米伽（omega）",
+    "category": "希腊字母",
+    "output": "ω"
+  },
+  {
+    "id": "greek.omega.upper",
+    "name": "大写欧米伽（Omega）",
+    "category": "希腊字母",
+    "output": "Ω"
+  }
+]

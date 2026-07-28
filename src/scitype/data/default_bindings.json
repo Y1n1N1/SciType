@@ -1,0 +1,158 @@
+[
+  {
+    "trigger": "//",
+    "symbol_id": "literal.slash"
+  },
+  {
+    "trigger": "/xw",
+    "symbol_id": "greek.phi.lower"
+  },
+  {
+    "trigger": "/jdz",
+    "symbol_id": "structure.absolute"
+  },
+  {
+    "trigger": "/jf",
+    "symbol_id": "calculus.integral_dx"
+  },
+  {
+    "trigger": "/gh",
+    "symbol_id": "structure.square_root_parenthesized"
+  },
+  {
+    "trigger": "/wq",
+    "symbol_id": "relation.infinity"
+  },
+  {
+    "trigger": "/xy",
+    "symbol_id": "relation.less_equal"
+  },
+  {
+    "trigger": "/dy",
+    "symbol_id": "relation.greater_equal"
+  },
+  {
+    "trigger": "/bd",
+    "symbol_id": "relation.not_equal"
+  },
+  {
+    "trigger": "/yd",
+    "symbol_id": "relation.approximately_equal"
+  },
+  {
+    "trigger": "/zb",
+    "symbol_id": "relation.proportional"
+  },
+  {
+    "trigger": "/qy",
+    "symbol_id": "relation.right_arrow"
+  },
+  {
+    "trigger": "/yh",
+    "symbol_id": "logic.implies"
+  },
+  {
+    "trigger": "/dj",
+    "symbol_id": "logic.equivalent"
+  },
+  {
+    "trigger": "/qh",
+    "symbol_id": "calculus.summation"
+  },
+  {
+    "trigger": "/lc",
+    "symbol_id": "calculus.product"
+  },
+  {
+    "trigger": "/pd",
+    "symbol_id": "calculus.partial"
+  },
+  {
+    "trigger": "/td",
+    "symbol_id": "calculus.nabla"
+  },
+  {
+    "trigger": "/jh",
+    "symbol_id": "operator.plus_minus"
+  },
+  {
+    "trigger": "/cheng",
+    "symbol_id": "operator.multiply"
+  },
+  {
+    "trigger": "/chu",
+    "symbol_id": "operator.divide"
+  },
+  {
+    "trigger": "/dc",
+    "symbol_id": "operator.middle_dot"
+  },
+  {
+    "trigger": "/jd",
+    "symbol_id": "unit.degree"
+  },
+  {
+    "trigger": "/sy",
+    "symbol_id": "set.element_of"
+  },
+  {
+    "trigger": "/bsy",
+    "symbol_id": "set.not_element_of"
+  },
+  {
+    "trigger": "/kj",
+    "symbol_id": "set.empty"
+  },
+  {
+    "trigger": "/jj",
+    "symbol_id": "set.intersection"
+  },
+  {
+    "trigger": "/bj",
+    "symbol_id": "set.union"
+  },
+  {
+    "trigger": "/ry",
+    "symbol_id": "logic.for_all"
+  },
+  {
+    "trigger": "/cz",
+    "symbol_id": "logic.exists"
+  },
+  {
+    "trigger": "/pi",
+    "symbol_id": "constant.pi"
+  },
+  {
+    "trigger": "/gm",
+    "symbol_id": "greek.gamma.lower"
+  },
+  {
+    "trigger": "/dgm",
+    "symbol_id": "greek.gamma.upper"
+  },
+  {
+    "trigger": "/sg",
+    "symbol_id": "greek.sigma.lower"
+  },
+  {
+    "trigger": "/dsg",
+    "symbol_id": "greek.sigma.upper"
+  },
+  {
+    "trigger": "/fi",
+    "symbol_id": "greek.phi.lower"
+  },
+  {
+    "trigger": "/dfi",
+    "symbol_id": "greek.phi.upper"
+  },
+  {
+    "trigger": "/og",
+    "symbol_id": "greek.omega.lower"
+  },
+  {
+    "trigger": "/dog",
+    "symbol_id": "greek.omega.upper"
+  }
+]
