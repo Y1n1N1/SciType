@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from .binding_rules import TriggerIssue, check_trigger
 from .template import CURSOR_PLACEHOLDER
 
 
@@ -26,7 +27,6 @@ class SymbolDefinition:
     output: str
 
 
-_TRIGGER_PATTERN = re.compile(r"^/(?:/|[a-z]+)$")
 _SYMBOL_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]*$")
 
 
@@ -85,19 +85,23 @@ def _missing_fields(
 
 
 def _validate_trigger(trigger: object, *, position: int, label: str) -> str:
-    if not isinstance(trigger, str):
+    issue = check_trigger(trigger)
+    if issue is TriggerIssue.NOT_STRING:
         raise DictionaryError(f"{label}第 {position} 项的 trigger 必须是字符串。")
-    if not trigger.strip():
+    if issue is TriggerIssue.EMPTY:
         raise DictionaryError(f"{label}第 {position} 项的 trigger 不能为空。")
-    if not trigger.startswith("/"):
+    if issue is TriggerIssue.MISSING_SLASH:
+        assert isinstance(trigger, str)
         raise DictionaryError(
             f"{label}第 {position} 项的 trigger“{trigger}”必须以 / 开头。",
         )
-    if _TRIGGER_PATTERN.fullmatch(trigger) is None:
+    if issue is TriggerIssue.INVALID_CHARACTERS:
+        assert isinstance(trigger, str)
         raise DictionaryError(
-            f"{label}第 {position} 项的 trigger“{trigger}”不符合 V0.1 规则："
-            "应为 / 加一个或多个小写英文字母，或为 //。",
+            f"{label}第 {position} 项的 trigger“{trigger}”格式非法："
+            "应为 / 加一个或多个小写 ASCII 字母或数字，或为 //。",
         )
+    assert isinstance(trigger, str)
     return trigger
 
 
@@ -246,8 +250,8 @@ def load_bindings(
     return bindings
 
 
-def _load_direct_dictionary(raw_data: object) -> dict[str, str]:
-    """Validate the legacy trigger-to-output format used by explicit paths."""
+def validate_direct_bindings(raw_data: object) -> dict[str, str]:
+    """Validate direct ``trigger``-to-``output`` binding entries."""
     entries = _require_entries(raw_data, label="词库")
     symbols: dict[str, str] = {}
     first_positions: dict[str, int] = {}
@@ -289,7 +293,7 @@ def _load_direct_dictionary(raw_data: object) -> dict[str, str]:
 def load_dictionary(path: str | Path | None = None) -> dict[str, str]:
     """Load compatibility bindings or validate a legacy direct dictionary."""
     if path is not None:
-        return _load_direct_dictionary(
+        return validate_direct_bindings(
             _read_json(
                 path,
                 default_resource="default_bindings.json",

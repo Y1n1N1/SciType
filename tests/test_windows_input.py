@@ -4,7 +4,12 @@ from dataclasses import replace
 import unittest
 
 from scitype.fraction import FRACTION_TEMPLATE, FractionStage
-from scitype.input_state import InputAction, InputState, KeyEvent
+from scitype.input_state import (
+    InputAction,
+    InputState,
+    KeyEvent,
+    SymbolInputStateMachine,
+)
 from scitype.windows_input import (
     AdapterDecision,
     CursorPlacementError,
@@ -128,6 +133,22 @@ class WindowsKeyMappingTests(unittest.TestCase):
 
 
 class WindowsInputAdapterTests(unittest.TestCase):
+    def test_user_dictionary_flows_through_windows_adapter(self) -> None:
+        adapter = WindowsInputAdapter(
+            state_machine=SymbolInputStateMachine({"/my": "★"}),
+        )
+
+        tap_key(adapter, VK_OEM_2)
+        tap_key(adapter, 0x4D)
+        tap_key(adapter, 0x59)
+        commit, commit_up = tap_key(adapter, VK_SPACE)
+
+        self.assertEqual(commit.action, InputAction.INSERT_TEXT)
+        self.assertEqual(commit.insert_text, "★")
+        self.assertEqual(commit.fallback_text, "/my")
+        self.assertEqual(commit_up.action, InputAction.CONSUME)
+        self.assertEqual(adapter.state_machine.state, InputState.NORMAL)
+
     def test_pass_consume_and_insert_actions(self) -> None:
         adapter = WindowsInputAdapter()
 
@@ -151,13 +172,31 @@ class WindowsInputAdapterTests(unittest.TestCase):
 
         tap_key(adapter, VK_OEM_2)
         tap_key(adapter, 0x58)
-        digit, digit_up = tap_key(adapter, 0x31, text="1")
+        punctuation, punctuation_up = tap_key(
+            adapter,
+            0xBD,
+            text="-",
+        )
 
-        self.assertEqual(digit.action, InputAction.INSERT_TEXT)
-        self.assertEqual(digit.insert_text, "/x1")
-        self.assertEqual(digit.fallback_text, "/x1")
-        self.assertTrue(digit.should_intercept)
-        self.assertEqual(digit_up.action, InputAction.CONSUME)
+        self.assertEqual(punctuation.action, InputAction.INSERT_TEXT)
+        self.assertEqual(punctuation.insert_text, "/x-")
+        self.assertEqual(punctuation.fallback_text, "/x-")
+        self.assertTrue(punctuation.should_intercept)
+        self.assertEqual(punctuation_up.action, InputAction.CONSUME)
+
+    def test_digit_trigger_flows_through_windows_adapter(self) -> None:
+        adapter = WindowsInputAdapter(
+            state_machine=SymbolInputStateMachine({"/x1": "数字命令"}),
+        )
+
+        tap_key(adapter, VK_OEM_2)
+        tap_key(adapter, 0x58)
+        tap_key(adapter, 0x31, text="1")
+        commit, _ = tap_key(adapter, VK_SPACE)
+
+        self.assertEqual(commit.action, InputAction.INSERT_TEXT)
+        self.assertEqual(commit.insert_text, "数字命令")
+        self.assertEqual(commit.fallback_text, "/x1")
 
     def test_adapter_integrates_absolute_value_and_literal_slash(self) -> None:
         adapter = WindowsInputAdapter()

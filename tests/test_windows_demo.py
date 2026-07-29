@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import logging
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -13,6 +15,7 @@ import scitype.windows_demo as windows_demo
 from scitype.app import (
     ApplicationStatus,
     _console_message,
+    load_runtime_dictionary,
     run_windows_application,
     verify_packaged_resources,
 )
@@ -63,8 +66,10 @@ class WindowsStartupTests(unittest.TestCase):
                 is_primary=False,
                 events=events,
             ),
-            dictionary_loader=lambda: events.append("dictionary"),
-            hook_factory=lambda: _FakeHook(events),
+            dictionary_loader=lambda: (
+                events.append("dictionary") or {"/fi": "φ"}
+            ),
+            hook_factory=lambda _dictionary: _FakeHook(events),
             logger=self.logger,
         )
 
@@ -85,7 +90,7 @@ class WindowsStartupTests(unittest.TestCase):
         events: list[str] = []
         hook_creation_count = 0
 
-        def create_hook() -> _FakeHook:
+        def create_hook(_dictionary: object) -> _FakeHook:
             nonlocal hook_creation_count
             hook_creation_count += 1
             events.append("hook_factory")
@@ -96,7 +101,9 @@ class WindowsStartupTests(unittest.TestCase):
                 is_primary=True,
                 events=events,
             ),
-            dictionary_loader=lambda: events.append("dictionary"),
+            dictionary_loader=lambda: (
+                events.append("dictionary") or {"/fi": "φ"}
+            ),
             hook_factory=create_hook,
             logger=self.logger,
         )
@@ -105,7 +112,9 @@ class WindowsStartupTests(unittest.TestCase):
                 is_primary=False,
                 events=events,
             ),
-            dictionary_loader=lambda: events.append("unexpected_dictionary"),
+            dictionary_loader=lambda: (
+                events.append("unexpected_dictionary") or {"/fi": "φ"}
+            ),
             hook_factory=create_hook,
             logger=self.logger,
         )
@@ -135,8 +144,10 @@ class WindowsStartupTests(unittest.TestCase):
                     is_primary=True,
                     events=events,
                 ),
-                dictionary_loader=lambda: events.append("dictionary"),
-                hook_factory=lambda: _FakeHook(
+                dictionary_loader=lambda: (
+                    events.append("dictionary") or {"/fi": "φ"}
+                ),
+                hook_factory=lambda _dictionary: _FakeHook(
                     events,
                     should_fail=True,
                 ),
@@ -144,6 +155,115 @@ class WindowsStartupTests(unittest.TestCase):
             )
 
         self.assertEqual(events[-1], "instance_exit")
+
+    def test_active_dictionary_is_passed_to_hook_factory(self) -> None:
+        events: list[str] = []
+        active_dictionary = {"/mine": "自定义"}
+        received_dictionary: object | None = None
+
+        def create_hook(dictionary: object) -> _FakeHook:
+            nonlocal received_dictionary
+            received_dictionary = dictionary
+            return _FakeHook(events)
+
+        status = run_windows_application(
+            instance_lock=_FakeInstanceLock(
+                is_primary=True,
+                events=events,
+            ),
+            dictionary_loader=lambda: active_dictionary,
+            hook_factory=create_hook,
+            logger=self.logger,
+        )
+
+        self.assertIs(status, ApplicationStatus.STOPPED)
+        self.assertIs(received_dictionary, active_dictionary)
+
+    def test_default_dictionary_failure_prevents_hook_and_releases_instance(
+        self,
+    ) -> None:
+        events: list[str] = []
+
+        def fail_dictionary_load() -> dict[str, str]:
+            events.append("dictionary")
+            raise RuntimeError("invalid default dictionary")
+
+        def forbidden_hook_factory(_dictionary: object) -> _FakeHook:
+            events.append("unexpected_hook")
+            return _FakeHook(events)
+
+        with self.assertRaisesRegex(RuntimeError, "invalid default dictionary"):
+            run_windows_application(
+                instance_lock=_FakeInstanceLock(
+                    is_primary=True,
+                    events=events,
+                ),
+                dictionary_loader=fail_dictionary_load,
+                hook_factory=forbidden_hook_factory,
+                logger=self.logger,
+            )
+
+        self.assertEqual(
+            events,
+            ["instance_enter", "dictionary", "instance_exit"],
+        )
+
+    def test_invalid_user_config_uses_defaults_and_still_runs_hook(
+        self,
+    ) -> None:
+        events: list[str] = []
+        log_stream = io.StringIO()
+        logger = logging.getLogger(f"scitype.safe-config.{id(self)}")
+        logger.handlers = [logging.StreamHandler(log_stream)]
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        private_trigger = "/ceshiyinsi"
+        private_replacement = "虚构内容${cursor}${cursor}"
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_directory = Path(temporary_directory, "SciType")
+            config_directory.mkdir()
+            config_path = config_directory / "user_bindings.json"
+            original_text = (
+                '{"schema_version":1,"bindings":['
+                f'{{"trigger":"{private_trigger}",'
+                f'"replacement":"{private_replacement}",'
+                '"enabled":true}]}'
+            )
+            config_path.write_text(original_text, encoding="utf-8")
+
+            def create_hook(dictionary: object) -> _FakeHook:
+                self.assertIn("/fi", dictionary)
+                events.append("hook_factory")
+                return _FakeHook(events)
+
+            with patch.dict(
+                os.environ,
+                {"LOCALAPPDATA": temporary_directory},
+            ):
+                status = run_windows_application(
+                    instance_lock=_FakeInstanceLock(
+                        is_primary=True,
+                        events=events,
+                    ),
+                    dictionary_loader=lambda: load_runtime_dictionary(
+                        logger,
+                    ),
+                    hook_factory=create_hook,
+                    logger=logger,
+                )
+
+            self.assertEqual(
+                config_path.read_text(encoding="utf-8"),
+                original_text,
+            )
+
+        self.assertIs(status, ApplicationStatus.STOPPED)
+        self.assertIn("hook_run", events)
+        logged = log_stream.getvalue()
+        self.assertIn("用户配置加载失败", logged)
+        self.assertNotIn(private_trigger, logged)
+        self.assertNotIn(private_replacement, logged)
 
     def test_packaged_resource_check_loads_dictionary_and_license(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import ctypes
 from enum import Enum, auto
 import logging
@@ -11,9 +11,15 @@ import sys
 from typing import ContextManager, Protocol
 
 from scitype.dictionary import load_dictionary
+from scitype.input_state import SymbolInputStateMachine
 from scitype.logging_config import configure_logging, get_log_path
 from scitype.single_instance import SingleInstanceLock
+from scitype.user_bindings import (
+    UserBindingLoadStatus,
+    load_active_bindings,
+)
 from scitype.windows_hook import Win32KeyboardHook
+from scitype.windows_input import WindowsInputAdapter
 
 
 class HookRunner(Protocol):
@@ -48,8 +54,8 @@ def _console_message(message: str = "", *, is_error: bool = False) -> None:
 def run_windows_application(
     *,
     instance_lock: ContextManager[InstanceLease],
-    dictionary_loader: Callable[[], object],
-    hook_factory: Callable[[], HookRunner],
+    dictionary_loader: Callable[[], Mapping[str, str]],
+    hook_factory: Callable[[Mapping[str, str]], HookRunner],
     logger: logging.Logger,
 ) -> ApplicationStatus:
     """Validate startup order and prevent a second Hook installation."""
@@ -58,10 +64,36 @@ def run_windows_application(
             logger.info("第二实例被拒绝")
             return ApplicationStatus.ALREADY_RUNNING
 
-        dictionary_loader()
-        hook = hook_factory()
+        active_dictionary = dictionary_loader()
+        hook = hook_factory(active_dictionary)
         hook.run()
         return ApplicationStatus.STOPPED
+
+
+def load_runtime_dictionary(logger: logging.Logger) -> Mapping[str, str]:
+    """Load effective bindings while logging only non-content status."""
+    snapshot = load_active_bindings()
+    load_result = snapshot.load_result
+
+    if load_result.status is UserBindingLoadStatus.MISSING:
+        logger.info("用户配置不存在")
+    elif load_result.status is UserBindingLoadStatus.LOADED:
+        logger.info("用户配置加载成功")
+    else:
+        error = load_result.error
+        error_code = error.code.name if error is not None else "UNKNOWN"
+        exception_type = (
+            error.exception_type
+            if error is not None and error.exception_type is not None
+            else "NONE"
+        )
+        logger.warning(
+            "用户配置加载失败 code=%s exception=%s",
+            error_code,
+            exception_type,
+        )
+
+    return snapshot.effective_bindings
 
 
 def verify_packaged_resources(
@@ -157,8 +189,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         status = run_windows_application(
             instance_lock=SingleInstanceLock(),
-            dictionary_loader=load_dictionary,
-            hook_factory=lambda: Win32KeyboardHook(logger=logger),
+            dictionary_loader=lambda: load_runtime_dictionary(logger),
+            hook_factory=lambda dictionary: Win32KeyboardHook(
+                adapter=WindowsInputAdapter(
+                    state_machine=SymbolInputStateMachine(dictionary),
+                ),
+                logger=logger,
+            ),
             logger=logger,
         )
         if status is ApplicationStatus.ALREADY_RUNNING:
