@@ -3,6 +3,7 @@
 from dataclasses import replace
 import unittest
 
+from scitype.fraction import FRACTION_TEMPLATE, FractionStage
 from scitype.input_state import InputAction, InputState, KeyEvent
 from scitype.windows_input import (
     AdapterDecision,
@@ -13,12 +14,21 @@ from scitype.windows_input import (
     VK_A,
     VK_BACK,
     VK_CONTROL,
+    VK_DOWN,
+    VK_END,
     VK_ESCAPE,
+    VK_HOME,
+    VK_LEFT,
     VK_MENU,
+    VK_NEXT,
     VK_OEM_2,
+    VK_PRIOR,
     VK_Q,
     VK_RETURN,
+    VK_RIGHT,
     VK_SPACE,
+    VK_TAB,
+    VK_UP,
     VK_Z,
     WindowsInputAdapter,
     WindowsKeyEvent,
@@ -33,6 +43,7 @@ def tap_key(
     *,
     text: str | None = None,
     modifiers: ModifierState | None = None,
+    foreground_window: int | None = None,
 ) -> tuple[AdapterDecision, AdapterDecision]:
     """Press and release one physical key."""
     key_down = WindowsKeyEvent(
@@ -40,12 +51,31 @@ def tap_key(
         is_key_down=True,
         text=text,
         modifiers=modifiers or ModifierState(),
+        foreground_window=foreground_window,
     )
     down_result = adapter.handle_event(key_down)
     up_result = adapter.handle_event(
         replace(key_down, is_key_down=False, text=None),
     )
     return down_result, up_result
+
+
+def submit_fraction(
+    adapter: WindowsInputAdapter,
+    *,
+    foreground_window: int = 101,
+) -> AdapterDecision:
+    """Submit /fs and mark its primary insertion as complete."""
+    tap_key(adapter, VK_OEM_2, foreground_window=foreground_window)
+    tap_key(adapter, 0x46, foreground_window=foreground_window)
+    tap_key(adapter, 0x53, foreground_window=foreground_window)
+    decision, _ = tap_key(
+        adapter,
+        VK_SPACE,
+        foreground_window=foreground_window,
+    )
+    adapter.complete_insertion(decision, InsertionOutcome.PRIMARY)
+    return decision
 
 
 class WindowsKeyMappingTests(unittest.TestCase):
@@ -199,6 +229,250 @@ class WindowsInputAdapterTests(unittest.TestCase):
         self.assertEqual(alt.action, InputAction.PASS_THROUGH)
         self.assertEqual(quit_result.action, InputAction.CONSUME)
         self.assertTrue(quit_result.exit_requested)
+
+    def test_fraction_insertion_starts_session_after_primary_success(
+        self,
+    ) -> None:
+        adapter = WindowsInputAdapter()
+        window = 101
+        inserted: list[str] = []
+        left_moves: list[int] = []
+
+        tap_key(adapter, VK_OEM_2, foreground_window=window)
+        tap_key(adapter, 0x46, foreground_window=window)
+        tap_key(adapter, 0x53, foreground_window=window)
+        decision, _ = tap_key(
+            adapter,
+            VK_SPACE,
+            foreground_window=window,
+        )
+        outcome = insert_decision_text(
+            decision,
+            inserted.append,
+            left_moves.append,
+        )
+        self.assertFalse(adapter.fraction_session.is_active)
+        adapter.complete_insertion(decision, outcome)
+
+        self.assertEqual(decision.insert_text, FRACTION_TEMPLATE)
+        self.assertTrue(decision.start_fraction_session)
+        self.assertEqual(inserted, ["()/()"])
+        self.assertEqual(left_moves, [4])
+        self.assertIs(outcome, InsertionOutcome.PRIMARY)
+        self.assertTrue(adapter.fraction_session.is_active)
+        self.assertEqual(
+            adapter.fraction_session.stage,
+            FractionStage.NUMERATOR,
+        )
+
+    def test_fraction_session_does_not_start_after_fallback(self) -> None:
+        adapter = WindowsInputAdapter()
+        window = 101
+        tap_key(adapter, VK_OEM_2, foreground_window=window)
+        tap_key(adapter, 0x46, foreground_window=window)
+        tap_key(adapter, 0x53, foreground_window=window)
+        decision, _ = tap_key(
+            adapter,
+            VK_SPACE,
+            foreground_window=window,
+        )
+
+        adapter.complete_insertion(decision, InsertionOutcome.FALLBACK)
+
+        self.assertFalse(adapter.fraction_session.is_active)
+
+    def test_two_fraction_tabs_move_then_third_passes_through(self) -> None:
+        adapter = WindowsInputAdapter()
+        window = 101
+        submit_fraction(adapter, foreground_window=window)
+
+        first, first_up = tap_key(
+            adapter,
+            VK_TAB,
+            foreground_window=window,
+        )
+        second, second_up = tap_key(
+            adapter,
+            VK_TAB,
+            foreground_window=window,
+        )
+        third, third_up = tap_key(
+            adapter,
+            VK_TAB,
+            foreground_window=window,
+        )
+
+        self.assertEqual(first.action, InputAction.CONSUME)
+        self.assertEqual(first.cursor_right_moves, 3)
+        self.assertEqual(first_up.action, InputAction.CONSUME)
+        self.assertEqual(second.action, InputAction.CONSUME)
+        self.assertEqual(second.cursor_right_moves, 1)
+        self.assertEqual(second_up.action, InputAction.CONSUME)
+        self.assertEqual(third.action, InputAction.PASS_THROUGH)
+        self.assertEqual(third.cursor_right_moves, 0)
+        self.assertEqual(third_up.action, InputAction.PASS_THROUGH)
+        self.assertFalse(adapter.fraction_session.is_active)
+
+    def test_tab_without_fraction_session_passes_through(self) -> None:
+        adapter = WindowsInputAdapter()
+
+        tab, tab_up = tap_key(
+            adapter,
+            VK_TAB,
+            foreground_window=101,
+        )
+
+        self.assertEqual(tab.action, InputAction.PASS_THROUGH)
+        self.assertEqual(tab_up.action, InputAction.PASS_THROUGH)
+
+    def test_tab_auto_repeat_does_not_skip_fraction_stage(self) -> None:
+        adapter = WindowsInputAdapter()
+        window = 101
+        submit_fraction(adapter, foreground_window=window)
+        tab_down = WindowsKeyEvent(
+            VK_TAB,
+            is_key_down=True,
+            foreground_window=window,
+        )
+
+        first = adapter.handle_event(tab_down)
+        repeated = adapter.handle_event(tab_down)
+
+        self.assertEqual(first.cursor_right_moves, 3)
+        self.assertEqual(repeated.action, InputAction.CONSUME)
+        self.assertEqual(repeated.cursor_right_moves, 0)
+        self.assertEqual(
+            adapter.fraction_session.stage,
+            FractionStage.DENOMINATOR,
+        )
+
+    def test_escape_cancels_fraction_but_preserves_app_behavior(self) -> None:
+        adapter = WindowsInputAdapter()
+        window = 101
+        submit_fraction(adapter, foreground_window=window)
+
+        escape, escape_up = tap_key(
+            adapter,
+            VK_ESCAPE,
+            foreground_window=window,
+        )
+
+        self.assertEqual(escape.action, InputAction.PASS_THROUGH)
+        self.assertEqual(escape_up.action, InputAction.PASS_THROUGH)
+        self.assertFalse(adapter.fraction_session.is_active)
+
+    def test_navigation_keys_cancel_fraction_and_pass_through(self) -> None:
+        navigation_keys = (
+            VK_LEFT,
+            VK_RIGHT,
+            VK_UP,
+            VK_DOWN,
+            VK_HOME,
+            VK_END,
+            VK_PRIOR,
+            VK_NEXT,
+        )
+
+        for vk_code in navigation_keys:
+            with self.subTest(vk_code=vk_code):
+                adapter = WindowsInputAdapter()
+                window = 101
+                submit_fraction(adapter, foreground_window=window)
+
+                navigation, navigation_up = tap_key(
+                    adapter,
+                    vk_code,
+                    foreground_window=window,
+                )
+
+                self.assertEqual(
+                    navigation.action,
+                    InputAction.PASS_THROUGH,
+                )
+                self.assertEqual(
+                    navigation_up.action,
+                    InputAction.PASS_THROUGH,
+                )
+                self.assertFalse(adapter.fraction_session.is_active)
+
+    def test_foreground_window_change_cancels_fraction(self) -> None:
+        adapter = WindowsInputAdapter()
+        submit_fraction(adapter, foreground_window=101)
+
+        normal_key, _ = tap_key(
+            adapter,
+            VK_A,
+            foreground_window=202,
+        )
+
+        self.assertEqual(normal_key.action, InputAction.PASS_THROUGH)
+        self.assertFalse(adapter.fraction_session.is_active)
+
+    def test_backspace_and_normal_character_keep_session_active(self) -> None:
+        adapter = WindowsInputAdapter()
+        window = 101
+        submit_fraction(adapter, foreground_window=window)
+
+        letter, _ = tap_key(
+            adapter,
+            VK_A,
+            foreground_window=window,
+        )
+        backspace, _ = tap_key(
+            adapter,
+            VK_BACK,
+            foreground_window=window,
+        )
+
+        self.assertEqual(letter.action, InputAction.PASS_THROUGH)
+        self.assertEqual(backspace.action, InputAction.PASS_THROUGH)
+        self.assertTrue(adapter.fraction_session.is_active)
+
+    def test_shift_tab_is_not_implemented_and_cancels_session(self) -> None:
+        adapter = WindowsInputAdapter()
+        window = 101
+        submit_fraction(adapter, foreground_window=window)
+
+        shifted_tab, shifted_tab_up = tap_key(
+            adapter,
+            VK_TAB,
+            modifiers=ModifierState(shift=True),
+            foreground_window=window,
+        )
+
+        self.assertEqual(shifted_tab.action, InputAction.PASS_THROUGH)
+        self.assertEqual(shifted_tab_up.action, InputAction.PASS_THROUGH)
+        self.assertFalse(adapter.fraction_session.is_active)
+
+    def test_ctrl_alt_q_clears_fraction_session(self) -> None:
+        adapter = WindowsInputAdapter()
+        window = 101
+        submit_fraction(adapter, foreground_window=window)
+
+        adapter.handle_event(
+            WindowsKeyEvent(
+                VK_CONTROL,
+                is_key_down=True,
+                foreground_window=window,
+            ),
+        )
+        adapter.handle_event(
+            WindowsKeyEvent(
+                VK_MENU,
+                is_key_down=True,
+                foreground_window=window,
+            ),
+        )
+        quit_result = adapter.handle_event(
+            WindowsKeyEvent(
+                VK_Q,
+                is_key_down=True,
+                foreground_window=window,
+            ),
+        )
+
+        self.assertTrue(quit_result.exit_requested)
+        self.assertFalse(adapter.fraction_session.is_active)
 
 
 class TextInsertionTests(unittest.TestCase):

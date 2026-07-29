@@ -20,6 +20,10 @@
     "symbol_id": "structure.square_root_parenthesized"
   },
   {
+    "trigger": "/fs",
+    "symbol_id": "structure.fraction_basic"
+  },
+  {
     "trigger": "/wq",
     "symbol_id": "relation.infinity"
   },

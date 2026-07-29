@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 
+from .fraction import FRACTION_TEMPLATE, FractionTabSession
 from .input_state import (
     InputAction,
     InputState,
@@ -15,12 +16,21 @@ from .template import render_template
 
 
 VK_BACK = 0x08
+VK_TAB = 0x09
 VK_RETURN = 0x0D
 VK_SHIFT = 0x10
 VK_CONTROL = 0x11
 VK_MENU = 0x12
 VK_ESCAPE = 0x1B
 VK_SPACE = 0x20
+VK_PRIOR = 0x21
+VK_NEXT = 0x22
+VK_END = 0x23
+VK_HOME = 0x24
+VK_LEFT = 0x25
+VK_UP = 0x26
+VK_RIGHT = 0x27
+VK_DOWN = 0x28
 VK_LSHIFT = 0xA0
 VK_RSHIFT = 0xA1
 VK_LCONTROL = 0xA2
@@ -38,6 +48,18 @@ _SHIFT_KEYS = frozenset((VK_SHIFT, VK_LSHIFT, VK_RSHIFT))
 _CONTROL_KEYS = frozenset((VK_CONTROL, VK_LCONTROL, VK_RCONTROL))
 _ALT_KEYS = frozenset((VK_MENU, VK_LMENU, VK_RMENU))
 _WINDOWS_KEYS = frozenset((VK_LWIN, VK_RWIN))
+_FRACTION_CANCEL_NAVIGATION_KEYS = frozenset(
+    (
+        VK_PRIOR,
+        VK_NEXT,
+        VK_END,
+        VK_HOME,
+        VK_LEFT,
+        VK_UP,
+        VK_RIGHT,
+        VK_DOWN,
+    ),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +81,7 @@ class WindowsKeyEvent:
     is_scitype_injected: bool = False
     text: str | None = None
     modifiers: ModifierState = field(default_factory=ModifierState)
+    foreground_window: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +91,9 @@ class AdapterDecision:
     action: InputAction
     insert_text: str | None = None
     fallback_text: str | None = None
+    cursor_right_moves: int = 0
+    start_fraction_session: bool = False
+    foreground_window: int | None = None
     exit_requested: bool = False
 
     @property
@@ -124,8 +150,10 @@ class WindowsInputAdapter:
     def __init__(
         self,
         state_machine: SymbolInputStateMachine | None = None,
+        fraction_session: FractionTabSession | None = None,
     ) -> None:
         self.state_machine = state_machine or SymbolInputStateMachine()
+        self.fraction_session = fraction_session or FractionTabSession()
         self._keys_down: set[int] = set()
         self._suppressed_keys: set[int] = set()
         self._injection_depth = 0
@@ -148,6 +176,8 @@ class WindowsInputAdapter:
         """Return the action required for one physical key event."""
         if event.is_scitype_injected or self.is_injecting:
             return AdapterDecision(InputAction.PASS_THROUGH)
+
+        self.fraction_session.observe_foreground(event.foreground_window)
 
         if not event.is_key_down:
             self._keys_down.discard(event.vk_code)
@@ -175,11 +205,37 @@ class WindowsInputAdapter:
             and event.modifiers.control
             and event.modifiers.alt
         ):
+            self.cancel_fraction_session()
             self._suppressed_keys.add(event.vk_code)
             return AdapterDecision(
                 InputAction.CONSUME,
                 exit_requested=True,
             )
+
+        if event.vk_code == VK_ESCAPE:
+            self.cancel_fraction_session()
+
+        if event.vk_code in _FRACTION_CANCEL_NAVIGATION_KEYS:
+            self.cancel_fraction_session()
+
+        if event.vk_code == VK_TAB:
+            if (
+                event.modifiers.shift
+                or event.modifiers.control
+                or event.modifiers.alt
+                or event.modifiers.windows
+            ):
+                self.cancel_fraction_session()
+            else:
+                tab_result = self.fraction_session.handle_tab(
+                    event.foreground_window,
+                )
+                if tab_result.consume_tab:
+                    self._suppressed_keys.add(event.vk_code)
+                    return AdapterDecision(
+                        InputAction.CONSUME,
+                        cursor_right_moves=tab_result.cursor_right_moves,
+                    )
 
         abstract_event = map_windows_key(event)
         state_before = self.state_machine.state
@@ -187,21 +243,44 @@ class WindowsInputAdapter:
         result = self.state_machine.handle_event(abstract_event)
 
         fallback_text = None
+        start_fraction_session = False
         if result.action is InputAction.INSERT_TEXT:
             fallback_text = self._raw_text_before_event(
                 state_before,
                 buffer_before,
                 abstract_event,
             )
+            self.cancel_fraction_session()
+            start_fraction_session = (
+                result.insert_text == FRACTION_TEMPLATE
+            )
 
         decision = AdapterDecision(
             action=result.action,
             insert_text=result.insert_text,
             fallback_text=fallback_text,
+            start_fraction_session=start_fraction_session,
+            foreground_window=event.foreground_window,
         )
         if decision.should_intercept:
             self._suppressed_keys.add(event.vk_code)
         return decision
+
+    def complete_insertion(
+        self,
+        decision: AdapterDecision,
+        outcome: InsertionOutcome,
+    ) -> None:
+        """Start the fraction session only after successful primary insertion."""
+        if (
+            decision.start_fraction_session
+            and outcome is InsertionOutcome.PRIMARY
+        ):
+            self.fraction_session.start(decision.foreground_window)
+
+    def cancel_fraction_session(self) -> None:
+        """Cancel pending Tab jumps without inspecting or changing text."""
+        self.fraction_session.cancel()
 
     def _effective_modifiers(self, event: WindowsKeyEvent) -> ModifierState:
         modifiers = event.modifiers

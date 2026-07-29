@@ -2,6 +2,7 @@
 
 import unittest
 
+from scitype.fraction import FRACTION_TEMPLATE
 from scitype.template import (
     RenderedTemplate,
     TemplateRenderError,
@@ -32,6 +33,12 @@ class RenderTemplateTests(unittest.TestCase):
         self.assertEqual(
             render_template("√${cursor}"),
             RenderedTemplate(text="√", cursor_left_moves=0),
+        )
+
+    def test_fraction_places_cursor_in_first_parentheses(self) -> None:
+        self.assertEqual(
+            render_template(FRACTION_TEMPLATE),
+            RenderedTemplate(text="()/()", cursor_left_moves=4),
         )
 
     def test_placeholder_only_renders_empty_text(self) -> None:

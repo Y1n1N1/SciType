@@ -3,6 +3,7 @@
 import unittest
 
 from scitype import parse_text
+from scitype.fraction import FRACTION_TEMPLATE
 
 
 class ParseTextTests(unittest.TestCase):
@@ -17,6 +18,9 @@ class ParseTextTests(unittest.TestCase):
 
     def test_square_root_command(self) -> None:
         self.assertEqual(parse_text("/gh"), "√(${cursor})")
+
+    def test_fraction_command(self) -> None:
+        self.assertEqual(parse_text("/fs"), FRACTION_TEMPLATE)
 
     def test_unknown_abbreviation_is_unchanged(self) -> None:
         self.assertEqual(parse_text("/abc"), "/abc")

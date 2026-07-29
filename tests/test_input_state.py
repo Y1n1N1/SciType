@@ -2,6 +2,7 @@
 
 import unittest
 
+from scitype.fraction import FRACTION_TEMPLATE
 from scitype.input_state import (
     InputAction,
     InputResult,
@@ -46,6 +47,21 @@ class SymbolInputStateMachineTests(unittest.TestCase):
         self.assertEqual(result.insert_text, "|${cursor}|")
         self.assertEqual(result.state, InputState.NORMAL)
         self.assertEqual(machine.buffer, "")
+
+    def test_fraction_command_commits_on_space_or_enter(self) -> None:
+        for confirmation in (KeyEvent.SPACE, KeyEvent.ENTER):
+            with self.subTest(confirmation=confirmation):
+                machine = SymbolInputStateMachine()
+
+                result = run_events(
+                    machine,
+                    [KeyEvent.SLASH, "f", "s", confirmation],
+                )[-1]
+
+                self.assertTrue(result.should_insert)
+                self.assertEqual(result.insert_text, FRACTION_TEMPLATE)
+                self.assertEqual(result.state, InputState.NORMAL)
+                self.assertEqual(machine.buffer, "")
 
     def test_unknown_command_is_inserted_unchanged(self) -> None:
         machine = SymbolInputStateMachine()

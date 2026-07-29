@@ -19,6 +19,7 @@ EXPECTED_SYMBOLS = {
     "/jdz": "|${cursor}|",
     "/jf": "∫${cursor}dx",
     "/gh": "√(${cursor})",
+    "/fs": "(${cursor})/()",
     "/wq": "∞",
     "/xy": "≤",
     "/dy": "≥",
@@ -71,7 +72,7 @@ class DefaultSymbolDictionaryTests(unittest.TestCase):
         # load_bindings() itself rejects duplicates before constructing the
         # mapping; the exact count also guards against accidental omissions.
         self.assertEqual(len(bindings), len(EXPECTED_SYMBOLS))
-        self.assertEqual(len(bindings), 39)
+        self.assertEqual(len(bindings), 40)
 
     def test_default_entries_have_safe_template_and_whitespace(self) -> None:
         for symbol_id, symbol in load_symbol_catalog().items():
@@ -103,7 +104,7 @@ class DefaultSymbolDictionaryTests(unittest.TestCase):
         with catalog_resource.open("r", encoding="utf-8") as file:
             raw_catalog = json.load(file)
 
-        self.assertEqual(len(raw_catalog), 38)
+        self.assertEqual(len(raw_catalog), 39)
         self.assertTrue(all("trigger" not in entry for entry in raw_catalog))
 
     def test_compatibility_aliases_can_share_one_symbol(self) -> None:
