@@ -1,15 +1,20 @@
-"""Tests for Windows startup ordering without a real Hook or mutex."""
+"""Tests for the formal Windows app without a real Hook or mutex."""
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
-from scitype.windows_demo import (
+import scitype.app as app
+import scitype.windows_demo as windows_demo
+from scitype.app import (
     ApplicationStatus,
     _console_message,
     run_windows_application,
+    verify_packaged_resources,
 )
 
 
@@ -68,8 +73,8 @@ class WindowsStartupTests(unittest.TestCase):
 
     def test_pythonw_without_console_streams_does_not_fail(self) -> None:
         with (
-            patch("scitype.windows_demo.sys.stdout", None),
-            patch("scitype.windows_demo.sys.stderr", None),
+            patch("scitype.app.sys.stdout", None),
+            patch("scitype.app.sys.stderr", None),
         ):
             _console_message("foreground")
             _console_message("error", is_error=True)
@@ -139,6 +144,38 @@ class WindowsStartupTests(unittest.TestCase):
             )
 
         self.assertEqual(events[-1], "instance_exit")
+
+    def test_packaged_resource_check_loads_dictionary_and_license(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            Path(temporary_directory, "LICENSE").write_text(
+                "license",
+                encoding="utf-8",
+            )
+            with patch(
+                "scitype.app.load_dictionary",
+                return_value={"/fi": "φ"},
+            ) as dictionary_loader:
+                verify_packaged_resources(license_root=temporary_directory)
+
+        dictionary_loader.assert_called_once_with()
+
+    def test_packaged_resource_check_rejects_missing_license(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            patch(
+                "scitype.app.load_dictionary",
+                return_value={"/fi": "φ"},
+            ),
+            self.assertRaisesRegex(RuntimeError, "LICENSE 缺失"),
+        ):
+            verify_packaged_resources(license_root=temporary_directory)
+
+    def test_windows_demo_is_a_compatibility_wrapper(self) -> None:
+        self.assertIs(windows_demo.main, app.main)
+        self.assertIs(
+            windows_demo.run_windows_application,
+            app.run_windows_application,
+        )
 
 
 if __name__ == "__main__":
