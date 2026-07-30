@@ -18,15 +18,15 @@ VSVersionInfo(
             StringStruct("CompanyName", "Y1n1N1"),
             StringStruct(
               "FileDescription",
-              "SciType 理科符号快捷输入工具"
+              "SciType 用户绑定设置"
             ),
             StringStruct("FileVersion", "0.6.0"),
-            StringStruct("InternalName", "SciType"),
+            StringStruct("InternalName", "SciTypeSettings"),
             StringStruct(
               "LegalCopyright",
               "Copyright (c) 2026 Y1n1N1"
             ),
-            StringStruct("OriginalFilename", "SciType.exe"),
+            StringStruct("OriginalFilename", "SciTypeSettings.exe"),
             StringStruct("ProductName", "SciType"),
             StringStruct("ProductVersion", "0.6.0")
           ]

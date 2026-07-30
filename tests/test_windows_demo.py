@@ -9,15 +9,25 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+import json
 
 import scitype.app as app
 import scitype.windows_demo as windows_demo
+from scitype.catalog_masks import (
+    create_catalog_mask_document,
+    save_catalog_masks,
+)
 from scitype.app import (
     ApplicationStatus,
     _console_message,
     load_runtime_dictionary,
     run_windows_application,
     verify_packaged_resources,
+)
+from scitype.user_bindings import (
+    UserBinding,
+    create_user_binding_document,
+    save_user_bindings,
 )
 
 
@@ -48,6 +58,22 @@ class _FakeHook:
         self.events.append("hook_run")
         if self.should_fail:
             raise RuntimeError("simulated hook failure")
+
+
+class _FakeRuntimeStatus:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    def __enter__(self) -> None:
+        self.events.append("status_enter")
+
+    def __exit__(
+        self,
+        exc_type: object,
+        exc_value: object,
+        traceback: object,
+    ) -> None:
+        self.events.append("status_exit")
 
 
 class WindowsStartupTests(unittest.TestCase):
@@ -179,6 +205,40 @@ class WindowsStartupTests(unittest.TestCase):
         self.assertIs(status, ApplicationStatus.STOPPED)
         self.assertIs(received_dictionary, active_dictionary)
 
+    def test_runtime_status_wraps_hook_and_cleans_after_failure(self) -> None:
+        events: list[str] = []
+
+        with self.assertRaisesRegex(RuntimeError, "hook failure"):
+            run_windows_application(
+                instance_lock=_FakeInstanceLock(
+                    is_primary=True,
+                    events=events,
+                ),
+                dictionary_loader=lambda: (
+                    events.append("dictionary") or {"/fi": "φ"}
+                ),
+                hook_factory=lambda _dictionary: _FakeHook(
+                    events,
+                    should_fail=True,
+                ),
+                runtime_status_factory=lambda _dictionary: (
+                    _FakeRuntimeStatus(events)
+                ),
+                logger=self.logger,
+            )
+
+        self.assertEqual(
+            events,
+            [
+                "instance_enter",
+                "dictionary",
+                "status_enter",
+                "hook_run",
+                "status_exit",
+                "instance_exit",
+            ],
+        )
+
     def test_default_dictionary_failure_prevents_hook_and_releases_instance(
         self,
     ) -> None:
@@ -264,6 +324,87 @@ class WindowsStartupTests(unittest.TestCase):
         self.assertIn("用户配置加载失败", logged)
         self.assertNotIn(private_trigger, logged)
         self.assertNotIn(private_replacement, logged)
+
+    def test_runtime_dictionary_applies_user_priority_over_local_pack(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            scitype_directory = Path(temporary_directory, "SciType")
+            packs_directory = scitype_directory / "packs"
+            packs_directory.mkdir(parents=True)
+            (packs_directory / "local.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "pack": {
+                            "id": "test.runtime",
+                            "name": "运行时包",
+                            "version": "1.0.0",
+                        },
+                        "entries": [
+                            {
+                                "name": "本地符号",
+                                "category": "其他",
+                                "trigger": "/local",
+                                "replacement": "扩展值",
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            config_path = scitype_directory / "user_bindings.json"
+            save_user_bindings(
+                create_user_binding_document(
+                    [UserBinding("/local", "用户值", True)],
+                ),
+                config_path,
+            )
+
+            with patch.dict(
+                os.environ,
+                {"LOCALAPPDATA": temporary_directory},
+            ):
+                enabled = load_runtime_dictionary(self.logger)
+            self.assertEqual(enabled["/local"], "用户值")
+
+            save_user_bindings(
+                create_user_binding_document(
+                    [UserBinding("/local", "停用说明", False)],
+                ),
+                config_path,
+            )
+            with patch.dict(
+                os.environ,
+                {"LOCALAPPDATA": temporary_directory},
+            ):
+                disabled = load_runtime_dictionary(self.logger)
+            self.assertNotIn("/local", disabled)
+
+    def test_runtime_dictionary_applies_catalog_masks_last(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            scitype_directory = Path(temporary_directory, "SciType")
+            user_path = scitype_directory / "user_bindings.json"
+            mask_path = scitype_directory / "catalog_masks.json"
+            save_user_bindings(
+                create_user_binding_document(
+                    [UserBinding("/jf", "用户积分", True)],
+                ),
+                user_path,
+            )
+            save_catalog_masks(
+                create_catalog_mask_document(("/jf",)),
+                mask_path,
+            )
+
+            with patch.dict(
+                os.environ,
+                {"LOCALAPPDATA": temporary_directory},
+            ):
+                dictionary = load_runtime_dictionary(self.logger)
+
+        self.assertNotIn("/jf", dictionary)
 
     def test_packaged_resource_check_loads_dictionary_and_license(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

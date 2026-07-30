@@ -1,4 +1,4 @@
-"""Table-driven tests for the symbol dictionary packaged with SciType 0.4.0."""
+"""Table-driven tests for the symbol dictionary packaged with SciType 0.6.0."""
 
 from importlib.resources import files
 import json

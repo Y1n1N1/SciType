@@ -17,12 +17,23 @@ from .binding_rules import (
     check_replacement,
     check_trigger,
 )
+from .catalog_masks import (
+    CATALOG_MASKS_FILE_NAME,
+    CatalogMaskDocument,
+    CatalogMaskLoadResult,
+    CatalogMaskLoadStatus,
+    CatalogMasksError,
+    create_catalog_mask_document,
+    load_catalog_masks,
+    save_catalog_masks,
+)
 from .dictionary import load_dictionary
 
 
 CURRENT_SCHEMA_VERSION = 1
 USER_CONFIG_DIRECTORY_NAME = "SciType"
 USER_BINDINGS_FILE_NAME = "user_bindings.json"
+MAX_USER_BINDINGS_FILE_BYTES = 8 * 1024 * 1024
 
 
 class UserBindingErrorCode(Enum):
@@ -50,6 +61,7 @@ class UserBindingErrorCode(Enum):
     UNSUPPORTED_PLACEHOLDER = auto()
     INVALID_ENABLED_TYPE = auto()
     DUPLICATE_TRIGGER = auto()
+    LEGACY_MIGRATION_FAILED = auto()
     SAVE_FAILED = auto()
     TEMPORARY_VALIDATION_FAILED = auto()
 
@@ -128,6 +140,9 @@ class ActiveBindingsSnapshot:
     effective_bindings: Mapping[str, str]
     user_document: UserBindingDocument
     load_result: UserBindingLoadResult
+    catalog_mask_document: CatalogMaskDocument
+    catalog_mask_load_result: CatalogMaskLoadResult
+    migration_error: UserBindingsError | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +152,7 @@ class ReloadResult:
     status: ReloadStatus
     snapshot: ActiveBindingsSnapshot
     load_result: UserBindingLoadResult
+    catalog_mask_load_result: CatalogMaskLoadResult
     restart_required: bool
 
 
@@ -349,6 +365,11 @@ def _reject_duplicate_json_fields(
 
 def _load_raw_json(path: Path) -> object:
     try:
+        if path.stat().st_size > MAX_USER_BINDINGS_FILE_BYTES:
+            raise UserBindingsError(
+                "用户配置 JSON 文件过大。",
+                code=UserBindingErrorCode.INVALID_JSON,
+            )
         with path.open("r", encoding="utf-8") as file:
             return json.load(
                 file,
@@ -363,6 +384,12 @@ def _load_raw_json(path: Path) -> object:
     except json.JSONDecodeError as error:
         raise UserBindingsError(
             "用户配置 JSON 格式损坏。",
+            code=UserBindingErrorCode.INVALID_JSON,
+            exception_type=type(error).__name__,
+        ) from error
+    except RecursionError as error:
+        raise UserBindingsError(
+            "用户配置 JSON 嵌套过深。",
             code=UserBindingErrorCode.INVALID_JSON,
             exception_type=type(error).__name__,
         ) from error
@@ -384,6 +411,7 @@ def _require_exact_fields(
     entry: Mapping[str, object],
     required: frozenset[str],
     *,
+    allowed: frozenset[str] | None = None,
     binding_index: int | None = None,
 ) -> None:
     missing = required.difference(entry)
@@ -396,7 +424,8 @@ def _require_exact_fields(
             binding_index=binding_index,
         )
 
-    unknown = set(entry).difference(required)
+    allowed_fields = required if allowed is None else allowed
+    unknown = set(entry).difference(allowed_fields)
     if unknown:
         field = sorted(unknown)[0]
         raise UserBindingsError(
@@ -487,6 +516,132 @@ def _parse_document(raw_data: object) -> UserBindingDocument:
     return validate_user_binding_document(document)
 
 
+def _parse_legacy_development_document(
+    raw_data: object,
+) -> tuple[UserBindingDocument, tuple[str, ...]]:
+    """Read only the short-lived V0.6 development ``catalog_mask`` field."""
+    if not isinstance(raw_data, dict):
+        raise UserBindingsError(
+            "用户配置顶层必须是 JSON 对象。",
+            code=UserBindingErrorCode.INVALID_ROOT,
+        )
+    _require_exact_fields(
+        raw_data,
+        frozenset(("schema_version", "bindings")),
+    )
+    schema_version = raw_data["schema_version"]
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version != CURRENT_SCHEMA_VERSION
+    ):
+        raise UserBindingsError(
+            "当前配置版本暂不支持。",
+            code=UserBindingErrorCode.UNSUPPORTED_SCHEMA_VERSION,
+            field="schema_version",
+        )
+    raw_bindings = raw_data["bindings"]
+    if not isinstance(raw_bindings, list):
+        raise UserBindingsError(
+            "bindings 必须是 JSON 数组。",
+            code=UserBindingErrorCode.INVALID_BINDINGS_TYPE,
+            field="bindings",
+        )
+
+    required_fields = frozenset(("trigger", "replacement", "enabled"))
+    allowed_fields = required_fields | frozenset(("catalog_mask",))
+    bindings: list[UserBinding] = []
+    normal_triggers: set[str] = set()
+    mask_triggers: set[str] = set()
+    saw_legacy_field = False
+    for index, raw_binding in enumerate(raw_bindings):
+        if not isinstance(raw_binding, dict):
+            raise UserBindingsError(
+                "绑定项必须是 JSON 对象。",
+                code=UserBindingErrorCode.INVALID_BINDING_TYPE,
+                binding_index=index,
+            )
+        _require_exact_fields(
+            raw_binding,
+            required_fields,
+            allowed=allowed_fields,
+            binding_index=index,
+        )
+        enabled = raw_binding["enabled"]
+        if not isinstance(enabled, bool):
+            raise UserBindingsError(
+                "enabled 必须是布尔值。",
+                code=UserBindingErrorCode.INVALID_ENABLED_TYPE,
+                field="enabled",
+                binding_index=index,
+            )
+        trigger = validate_trigger(
+            raw_binding["trigger"],
+            binding_index=index,
+        )
+        replacement = validate_replacement(
+            raw_binding["replacement"],
+            binding_index=index,
+        )
+        catalog_mask = raw_binding.get("catalog_mask", False)
+        if "catalog_mask" in raw_binding:
+            saw_legacy_field = True
+        if not isinstance(catalog_mask, bool):
+            raise UserBindingsError(
+                "开发版 catalog_mask 字段必须是布尔值。",
+                code=UserBindingErrorCode.LEGACY_MIGRATION_FAILED,
+                field="catalog_mask",
+                binding_index=index,
+            )
+        if catalog_mask:
+            if enabled:
+                raise UserBindingsError(
+                    "开发版词典屏蔽记录不能处于启用状态。",
+                    code=UserBindingErrorCode.LEGACY_MIGRATION_FAILED,
+                    field="catalog_mask",
+                    binding_index=index,
+                )
+            if trigger in normal_triggers:
+                raise UserBindingsError(
+                    "开发版配置包含冲突触发词。",
+                    code=UserBindingErrorCode.DUPLICATE_TRIGGER,
+                    field="trigger",
+                    binding_index=index,
+                )
+            mask_triggers.add(trigger)
+            continue
+
+        if trigger in normal_triggers or trigger in mask_triggers:
+            raise UserBindingsError(
+                "用户配置包含重复触发词。",
+                code=UserBindingErrorCode.DUPLICATE_TRIGGER,
+                field="trigger",
+                binding_index=index,
+            )
+        normal_triggers.add(trigger)
+        bindings.append(
+            UserBinding(
+                trigger=trigger,
+                replacement=replacement,
+                enabled=enabled,
+            ),
+        )
+
+    if not saw_legacy_field:
+        raise UserBindingsError(
+            "用户配置不属于可迁移的开发版格式。",
+            code=UserBindingErrorCode.UNKNOWN_FIELD,
+        )
+    document = UserBindingDocument(
+        schema_version=CURRENT_SCHEMA_VERSION,
+        bindings=tuple(bindings),
+    )
+    return (
+        validate_user_binding_document(document),
+        tuple(sorted(mask_triggers)),
+    )
+
+
 def _load_document_strict(path: Path) -> UserBindingDocument:
     return _parse_document(_load_raw_json(path))
 
@@ -549,8 +704,9 @@ def load_user_bindings(
 def resolve_effective_bindings(
     default_bindings: Mapping[str, str],
     document: UserBindingDocument,
+    catalog_masks: CatalogMaskDocument | None = None,
 ) -> dict[str, str]:
-    """Apply enabled overrides and disabled masks to packaged defaults."""
+    """Merge defaults, user rules, then read-only catalog masks."""
     validate_user_binding_document(document)
     effective = dict(default_bindings)
     for binding in document.bindings:
@@ -558,6 +714,9 @@ def resolve_effective_bindings(
             effective[binding.trigger] = binding.replacement
         else:
             effective.pop(binding.trigger, None)
+    if catalog_masks is not None:
+        for trigger in catalog_masks.disabled_triggers:
+            effective.pop(trigger, None)
     return effective
 
 
@@ -565,44 +724,222 @@ def _freeze_mapping(bindings: Mapping[str, str]) -> Mapping[str, str]:
     return MappingProxyType(dict(bindings))
 
 
-def _snapshot_from_result(
+def _snapshot_from_results(
     default_bindings: Mapping[str, str],
     load_result: UserBindingLoadResult,
+    catalog_mask_document: CatalogMaskDocument,
+    catalog_mask_load_result: CatalogMaskLoadResult,
+    *,
+    migration_error: UserBindingsError | None = None,
 ) -> ActiveBindingsSnapshot:
     document = load_result.document
-    effective = resolve_effective_bindings(default_bindings, document)
+    effective = resolve_effective_bindings(
+        default_bindings,
+        document,
+        catalog_mask_document,
+    )
     return ActiveBindingsSnapshot(
         default_bindings=_freeze_mapping(default_bindings),
         effective_bindings=_freeze_mapping(effective),
         user_document=document,
         load_result=load_result,
+        catalog_mask_document=catalog_mask_document,
+        catalog_mask_load_result=catalog_mask_load_result,
+        migration_error=migration_error,
     )
+
+
+def _resolve_catalog_masks_path(
+    user_result: UserBindingLoadResult,
+    explicit_path: str | os.PathLike[str] | None,
+) -> Path | None:
+    if explicit_path is not None:
+        return Path(explicit_path)
+    if user_result.path is not None:
+        return user_result.path.parent / CATALOG_MASKS_FILE_NAME
+    return None
+
+
+def _legacy_user_binding_load(
+    strict_result: UserBindingLoadResult,
+) -> tuple[UserBindingLoadResult, tuple[str, ...]] | None:
+    path = strict_result.path
+    if (
+        strict_result.status is not UserBindingLoadStatus.FAILED
+        or path is None
+    ):
+        return None
+    try:
+        document, mask_triggers = _parse_legacy_development_document(
+            _load_raw_json(path),
+        )
+    except UserBindingsError:
+        return None
+    return (
+        UserBindingLoadResult(
+            status=UserBindingLoadStatus.LOADED,
+            document=document,
+            path=path,
+        ),
+        mask_triggers,
+    )
+
+
+def _restore_optional_file(
+    path: Path,
+    original: bytes | None,
+) -> None:
+    """Best-effort rollback for the first file in a two-file migration."""
+    if original is None:
+        path.unlink(missing_ok=True)
+        return
+    temporary_path: Path | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{path.name}.rollback.",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        ) as temporary_file:
+            temporary_file.write(original)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+            temporary_path = Path(temporary_file.name)
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def migrate_legacy_catalog_masks(
+    user_path: str | os.PathLike[str],
+    catalog_masks_path: str | os.PathLike[str],
+    *,
+    user_document: UserBindingDocument,
+    catalog_mask_document: CatalogMaskDocument,
+) -> None:
+    """Move development masks without exposing a partially lost mask."""
+    resolved_user_path = Path(user_path)
+    resolved_mask_path = Path(catalog_masks_path)
+    if resolved_user_path == resolved_mask_path:
+        raise UserBindingsError(
+            "用户配置与词典屏蔽配置路径不能相同。",
+            code=UserBindingErrorCode.LEGACY_MIGRATION_FAILED,
+        )
+    try:
+        original_mask: bytes | None = (
+            resolved_mask_path.read_bytes()
+            if resolved_mask_path.exists()
+            else None
+        )
+    except OSError as error:
+        raise UserBindingsError(
+            "无法准备开发版词典屏蔽配置迁移。",
+            code=UserBindingErrorCode.LEGACY_MIGRATION_FAILED,
+            exception_type=type(error).__name__,
+        ) from error
+
+    try:
+        # Write masks first. A process interruption can then only leave the
+        # same mask in both files; the next startup de-duplicates and retries.
+        save_catalog_masks(catalog_mask_document, resolved_mask_path)
+        save_user_bindings(user_document, resolved_user_path)
+    except (CatalogMasksError, UserBindingsError, OSError) as error:
+        try:
+            _restore_optional_file(resolved_mask_path, original_mask)
+        except OSError:
+            pass
+        raise UserBindingsError(
+            "开发版词典屏蔽配置迁移失败，原文件已保留。",
+            code=UserBindingErrorCode.LEGACY_MIGRATION_FAILED,
+            exception_type=type(error).__name__,
+        ) from error
 
 
 def load_active_bindings(
     user_bindings_path: str | os.PathLike[str] | None = None,
     *,
     default_bindings: Mapping[str, str] | None = None,
+    catalog_masks_path: str | os.PathLike[str] | None = None,
 ) -> ActiveBindingsSnapshot:
-    """Load strict core defaults and safely overlay optional user data."""
+    """Load and merge every persistent source used by the input backend."""
     defaults = (
         load_dictionary()
         if default_bindings is None
         else dict(default_bindings)
     )
-    load_result = load_user_bindings(user_bindings_path)
-    return _snapshot_from_result(defaults, load_result)
+    strict_result = load_user_bindings(user_bindings_path)
+    resolved_masks_path = _resolve_catalog_masks_path(
+        strict_result,
+        catalog_masks_path,
+    )
+    mask_result = load_catalog_masks(resolved_masks_path)
+    if resolved_masks_path is None:
+        resolved_masks_path = mask_result.path
+    mask_document = mask_result.document
+    migration_error: UserBindingsError | None = None
+
+    legacy = _legacy_user_binding_load(strict_result)
+    if legacy is None:
+        user_result = strict_result
+    else:
+        user_result, legacy_masks = legacy
+        mask_document = create_catalog_mask_document(
+            (
+                *mask_result.document.disabled_triggers,
+                *legacy_masks,
+            ),
+        )
+        if (
+            mask_result.status is CatalogMaskLoadStatus.FAILED
+            or user_result.path is None
+            or resolved_masks_path is None
+        ):
+            migration_error = UserBindingsError(
+                "开发版词典屏蔽配置迁移失败，原文件已保留。",
+                code=UserBindingErrorCode.LEGACY_MIGRATION_FAILED,
+            )
+        else:
+            try:
+                migrate_legacy_catalog_masks(
+                    user_result.path,
+                    resolved_masks_path,
+                    user_document=user_result.document,
+                    catalog_mask_document=mask_document,
+                )
+            except UserBindingsError as error:
+                migration_error = error
+            else:
+                user_result = load_user_bindings(user_result.path)
+                mask_result = load_catalog_masks(resolved_masks_path)
+                mask_document = mask_result.document
+
+    return _snapshot_from_results(
+        defaults,
+        user_result,
+        mask_document,
+        mask_result,
+        migration_error=migration_error,
+    )
 
 
 def load_active_dictionary(
     user_bindings_path: str | os.PathLike[str] | None = None,
     *,
     default_bindings: Mapping[str, str] | None = None,
+    catalog_masks_path: str | os.PathLike[str] | None = None,
 ) -> dict[str, str]:
     """Compatibility helper returning only the effective dictionary."""
     snapshot = load_active_bindings(
         user_bindings_path,
         default_bindings=default_bindings,
+        catalog_masks_path=catalog_masks_path,
     )
     return dict(snapshot.effective_bindings)
 
@@ -610,28 +947,42 @@ def load_active_dictionary(
 def reload_user_bindings(
     current_snapshot: ActiveBindingsSnapshot,
     path: str | os.PathLike[str] | None = None,
+    *,
+    catalog_masks_path: str | os.PathLike[str] | None = None,
 ) -> ReloadResult:
-    """Reload explicitly, retaining the old valid snapshot on failure."""
+    """Reload both local files, retaining the last valid effective snapshot."""
     reload_path = (
         path if path is not None else current_snapshot.load_result.path
     )
-    load_result = load_user_bindings(reload_path)
-    if load_result.status is UserBindingLoadStatus.FAILED:
+    mask_path = (
+        catalog_masks_path
+        if catalog_masks_path is not None
+        else current_snapshot.catalog_mask_load_result.path
+    )
+    snapshot = load_active_bindings(
+        reload_path,
+        default_bindings=current_snapshot.default_bindings,
+        catalog_masks_path=mask_path,
+    )
+    if (
+        snapshot.load_result.status is UserBindingLoadStatus.FAILED
+        or snapshot.catalog_mask_load_result.status
+        is CatalogMaskLoadStatus.FAILED
+        or snapshot.migration_error is not None
+    ):
         return ReloadResult(
             status=ReloadStatus.RETAINED_AFTER_FAILURE,
             snapshot=current_snapshot,
-            load_result=load_result,
+            load_result=snapshot.load_result,
+            catalog_mask_load_result=snapshot.catalog_mask_load_result,
             restart_required=False,
         )
 
-    snapshot = _snapshot_from_result(
-        current_snapshot.default_bindings,
-        load_result,
-    )
     return ReloadResult(
         status=ReloadStatus.APPLIED,
         snapshot=snapshot,
-        load_result=load_result,
+        load_result=snapshot.load_result,
+        catalog_mask_load_result=snapshot.catalog_mask_load_result,
         restart_required=True,
     )
 
@@ -640,16 +991,18 @@ def _document_to_json_data(
     document: UserBindingDocument,
 ) -> dict[str, object]:
     validate_user_binding_document(document)
-    return {
-        "schema_version": document.schema_version,
-        "bindings": [
+    serialized_bindings: list[dict[str, object]] = []
+    for binding in document.bindings:
+        serialized_bindings.append(
             {
                 "trigger": binding.trigger,
                 "replacement": binding.replacement,
                 "enabled": binding.enabled,
-            }
-            for binding in document.bindings
-        ],
+            },
+        )
+    return {
+        "schema_version": document.schema_version,
+        "bindings": serialized_bindings,
     }
 
 

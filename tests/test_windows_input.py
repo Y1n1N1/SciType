@@ -149,6 +149,64 @@ class WindowsInputAdapterTests(unittest.TestCase):
         self.assertEqual(commit_up.action, InputAction.CONSUME)
         self.assertEqual(adapter.state_machine.state, InputState.NORMAL)
 
+    def test_matched_enter_is_fully_consumed_and_preserves_multiline_text(
+        self,
+    ) -> None:
+        replacement = "第一段\n第二段\n第三段"
+        adapter = WindowsInputAdapter(
+            state_machine=SymbolInputStateMachine(
+                {"/wzhl": replacement},
+            ),
+        )
+        tap_key(adapter, VK_OEM_2)
+        for vk_code in (0x57, 0x5A, 0x48, 0x4C):
+            tap_key(adapter, vk_code)
+
+        enter_event = WindowsKeyEvent(VK_RETURN, is_key_down=True)
+        key_down = adapter.handle_event(enter_event)
+        with adapter.injection_guard():
+            key_up = adapter.handle_event(
+                replace(enter_event, is_key_down=False),
+            )
+        inserted: list[str] = []
+        outcome = insert_decision_text(key_down, inserted.append)
+        next_enter_down, next_enter_up = tap_key(adapter, VK_RETURN)
+
+        self.assertIs(key_down.action, InputAction.INSERT_TEXT)
+        self.assertTrue(key_down.should_intercept)
+        self.assertIs(key_up.action, InputAction.CONSUME)
+        self.assertIs(outcome, InsertionOutcome.PRIMARY)
+        self.assertEqual(inserted, [replacement])
+        self.assertFalse(inserted[0].endswith("\n"))
+        self.assertEqual(inserted[0].count("\n"), 2)
+        self.assertIs(
+            next_enter_down.action,
+            InputAction.PASS_THROUGH,
+        )
+        self.assertIs(
+            next_enter_up.action,
+            InputAction.PASS_THROUGH,
+        )
+
+    def test_unknown_trigger_enter_keeps_existing_raw_fallback_behavior(
+        self,
+    ) -> None:
+        adapter = WindowsInputAdapter(
+            state_machine=SymbolInputStateMachine(
+                {"/known": "已知"},
+            ),
+        )
+        tap_key(adapter, VK_OEM_2)
+        for vk_code in (VK_A, 0x42, 0x43):
+            tap_key(adapter, vk_code)
+
+        key_down, key_up = tap_key(adapter, VK_RETURN)
+
+        self.assertIs(key_down.action, InputAction.INSERT_TEXT)
+        self.assertEqual(key_down.insert_text, "/abc")
+        self.assertEqual(key_down.fallback_text, "/abc")
+        self.assertIs(key_up.action, InputAction.CONSUME)
+
     def test_pass_consume_and_insert_actions(self) -> None:
         adapter = WindowsInputAdapter()
 

@@ -9,9 +9,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from scitype.catalog_masks import (
+    CatalogMaskLoadStatus,
+    load_catalog_masks,
+)
 from scitype.dictionary import DictionaryError
 from scitype.user_bindings import (
     CURRENT_SCHEMA_VERSION,
+    MAX_USER_BINDINGS_FILE_BYTES,
     ReloadStatus,
     USER_BINDINGS_FILE_NAME,
     ActiveBindingsSnapshot,
@@ -104,6 +109,45 @@ class UserBindingsTests(unittest.TestCase):
             self.assertEqual(result.document, empty_user_binding_document())
             self.assertFalse(path.exists())
 
+    def test_deep_json_is_reported_as_invalid_without_becoming_fatal(self) -> None:
+        with tempfile.TemporaryDirectory(
+            dir=_TEST_DIRECTORY,
+        ) as temporary_directory:
+            path = Path(temporary_directory, USER_BINDINGS_FILE_NAME)
+            path.write_text(
+                "[" * 5000 + "0" + "]" * 5000,
+                encoding="utf-8",
+            )
+
+            result = load_user_bindings(path)
+            active = load_active_bindings(
+                path,
+                default_bindings={"/fi": "φ"},
+            )
+
+        self.assertIs(result.status, UserBindingLoadStatus.FAILED)
+        self.assertIs(
+            result.error.code if result.error is not None else None,
+            UserBindingErrorCode.INVALID_JSON,
+        )
+        self.assertEqual(dict(active.effective_bindings), {"/fi": "φ"})
+
+    def test_oversized_json_is_rejected_before_parsing(self) -> None:
+        with tempfile.TemporaryDirectory(
+            dir=_TEST_DIRECTORY,
+        ) as temporary_directory:
+            path = Path(temporary_directory, USER_BINDINGS_FILE_NAME)
+            with path.open("wb") as file:
+                file.truncate(MAX_USER_BINDINGS_FILE_BYTES + 1)
+
+            result = load_user_bindings(path)
+
+        self.assertIs(result.status, UserBindingLoadStatus.FAILED)
+        self.assertIs(
+            result.error.code if result.error is not None else None,
+            UserBindingErrorCode.INVALID_JSON,
+        )
+
     def test_supported_replacements_round_trip_in_formal_schema(self) -> None:
         expected = document(
             binding("/zhongwen", "示例文本"),
@@ -128,6 +172,205 @@ class UserBindingsTests(unittest.TestCase):
         )
         self.assertIs(loaded.status, UserBindingLoadStatus.LOADED)
         self.assertEqual(loaded.document, expected)
+
+    def test_catalog_mask_is_not_part_of_the_strict_user_schema(self) -> None:
+        raw_data = json_document(
+            [
+                {
+                    "trigger": "/jf",
+                    "replacement": "∫${cursor}dx",
+                    "enabled": False,
+                    "catalog_mask": True,
+                },
+            ],
+        )
+        with tempfile.TemporaryDirectory(
+            dir=_TEST_DIRECTORY,
+        ) as temporary_directory:
+            path = Path(temporary_directory, USER_BINDINGS_FILE_NAME)
+            path.write_text(
+                json.dumps(raw_data, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            loaded = load_user_bindings(path)
+
+        self.assertIs(loaded.status, UserBindingLoadStatus.FAILED)
+        self.assertIs(
+            loaded.error.code if loaded.error is not None else None,
+            UserBindingErrorCode.UNKNOWN_FIELD,
+        )
+
+    def test_development_catalog_masks_migrate_without_losing_bindings(
+        self,
+    ) -> None:
+        raw_data = json_document(
+            [
+                {
+                    "trigger": "/jf",
+                    "replacement": "∫${cursor}dx",
+                    "enabled": False,
+                    "catalog_mask": True,
+                },
+                {
+                    "trigger": "/mine",
+                    "replacement": "用户内容",
+                    "enabled": True,
+                },
+                {
+                    "trigger": "/fi",
+                    "replacement": "φ",
+                    "enabled": True,
+                },
+            ],
+        )
+        with tempfile.TemporaryDirectory(
+            dir=_TEST_DIRECTORY,
+        ) as temporary_directory:
+            root = Path(temporary_directory)
+            user_path = root / USER_BINDINGS_FILE_NAME
+            mask_path = root / "catalog_masks.json"
+            user_path.write_text(
+                json.dumps(raw_data, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            snapshot = load_active_bindings(
+                user_path,
+                catalog_masks_path=mask_path,
+                default_bindings={
+                    "/jf": "∫${cursor}dx",
+                    "/fi": "φ",
+                },
+            )
+            rewritten = json.loads(
+                user_path.read_text(encoding="utf-8"),
+            )
+            masks = load_catalog_masks(mask_path)
+
+        self.assertIsNone(snapshot.migration_error)
+        self.assertEqual(
+            snapshot.user_document.bindings,
+            (
+                UserBinding("/mine", "用户内容", True),
+                UserBinding("/fi", "φ", True),
+            ),
+        )
+        self.assertTrue(
+            all(
+                set(item) == {"trigger", "replacement", "enabled"}
+                for item in rewritten["bindings"]
+            ),
+        )
+        self.assertIs(masks.status, CatalogMaskLoadStatus.LOADED)
+        self.assertEqual(masks.document.disabled_triggers, ("/jf",))
+        self.assertNotIn("/jf", snapshot.effective_bindings)
+        self.assertEqual(snapshot.effective_bindings["/fi"], "φ")
+
+    def test_duplicate_development_masks_are_deduplicated(self) -> None:
+        raw_data = json_document(
+            [
+                {
+                    "trigger": "/jf",
+                    "replacement": "旧值一",
+                    "enabled": False,
+                    "catalog_mask": True,
+                },
+                {
+                    "trigger": "/jf",
+                    "replacement": "旧值二",
+                    "enabled": False,
+                    "catalog_mask": True,
+                },
+            ],
+        )
+        with tempfile.TemporaryDirectory(
+            dir=_TEST_DIRECTORY,
+        ) as temporary_directory:
+            root = Path(temporary_directory)
+            user_path = root / USER_BINDINGS_FILE_NAME
+            mask_path = root / "catalog_masks.json"
+            user_path.write_text(
+                json.dumps(raw_data, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            snapshot = load_active_bindings(
+                user_path,
+                catalog_masks_path=mask_path,
+                default_bindings={"/jf": "新值"},
+            )
+
+        self.assertIsNone(snapshot.migration_error)
+        self.assertEqual(
+            snapshot.catalog_mask_document.disabled_triggers,
+            ("/jf",),
+        )
+        self.assertEqual(snapshot.user_document.bindings, ())
+
+    def test_migration_failure_preserves_both_original_files(self) -> None:
+        raw_data = json_document(
+            [
+                {
+                    "trigger": "/jf",
+                    "replacement": "旧值",
+                    "enabled": False,
+                    "catalog_mask": True,
+                },
+                {
+                    "trigger": "/mine",
+                    "replacement": "用户内容",
+                    "enabled": True,
+                },
+            ],
+        )
+        with tempfile.TemporaryDirectory(
+            dir=_TEST_DIRECTORY,
+        ) as temporary_directory:
+            root = Path(temporary_directory)
+            user_path = root / USER_BINDINGS_FILE_NAME
+            mask_path = root / "catalog_masks.json"
+            user_path.write_text(
+                json.dumps(raw_data, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            mask_path.write_text(
+                '{"schema_version":1,"disabled_triggers":["/gh"]}',
+                encoding="utf-8",
+            )
+            original_user = user_path.read_bytes()
+            original_masks = mask_path.read_bytes()
+            failure = UserBindingsError(
+                "simulated",
+                code=UserBindingErrorCode.SAVE_FAILED,
+            )
+
+            with patch(
+                "scitype.user_bindings.save_user_bindings",
+                side_effect=failure,
+            ):
+                snapshot = load_active_bindings(
+                    user_path,
+                    catalog_masks_path=mask_path,
+                    default_bindings={
+                        "/jf": "新值",
+                        "/gh": "√${cursor}",
+                    },
+                )
+
+            self.assertEqual(user_path.read_bytes(), original_user)
+            self.assertEqual(mask_path.read_bytes(), original_masks)
+
+        self.assertIsNotNone(snapshot.migration_error)
+        self.assertEqual(
+            snapshot.user_document.bindings,
+            (UserBinding("/mine", "用户内容", True),),
+        )
+        self.assertEqual(
+            snapshot.catalog_mask_document.disabled_triggers,
+            ("/gh", "/jf"),
+        )
+        self.assertNotIn("/jf", snapshot.effective_bindings)
+        self.assertNotIn("/gh", snapshot.effective_bindings)
 
     def test_unsupported_schema_version_fails_without_rewriting(self) -> None:
         raw_data = json_document([], schema_version=2)

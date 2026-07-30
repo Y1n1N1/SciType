@@ -25,6 +25,7 @@ from .windows_input import (
     VK_RMENU,
     VK_RSHIFT,
     VK_RWIN,
+    VK_RETURN,
     VK_SHIFT,
     WindowsInputAdapter,
     WindowsKeyEvent,
@@ -489,32 +490,43 @@ class Win32KeyboardHook:
             keyboard_state[VK_MENU] = 0x80
 
     def _send_unicode_text(self, text: str) -> None:
-        utf16 = text.encode("utf-16-le", errors="surrogatepass")
-        code_units = [
-            int.from_bytes(utf16[index : index + 2], "little")
-            for index in range(0, len(utf16), 2)
-        ]
-        if not code_units:
+        normalized_text = text.replace("\r\n", "\n").replace("\r", "\n")
+        if not normalized_text:
             return
 
-        input_events = (_INPUT * (len(code_units) * 2))()
-        event_index = 0
-        for code_unit in code_units:
-            input_events[event_index].type = INPUT_KEYBOARD
-            input_events[event_index].ki = _KEYBDINPUT(
-                wVk=0,
-                wScan=code_unit,
-                dwFlags=KEYEVENTF_UNICODE,
-                time=0,
-                dwExtraInfo=_SCITYPE_EXTRA_INFO,
-            )
-            event_index += 1
+        event_pairs: list[tuple[int, int, int]] = []
+        for character in normalized_text:
+            if character == "\n":
+                # KEYEVENTF_UNICODE with U+000A is ignored by common editors
+                # such as Notepad. A marked Enter pair preserves line breaks
+                # while still bypassing SciType's own Hook.
+                event_pairs.append((VK_RETURN, 0, 0))
+                event_pairs.append((VK_RETURN, 0, KEYEVENTF_KEYUP))
+                continue
 
+            utf16 = character.encode("utf-16-le", errors="surrogatepass")
+            for index in range(0, len(utf16), 2):
+                code_unit = int.from_bytes(
+                    utf16[index : index + 2],
+                    "little",
+                )
+                event_pairs.append((0, code_unit, KEYEVENTF_UNICODE))
+                event_pairs.append(
+                    (
+                        0,
+                        code_unit,
+                        KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                    ),
+                )
+
+        input_events = (_INPUT * len(event_pairs))()
+        event_index = 0
+        for virtual_key, scan_code, flags in event_pairs:
             input_events[event_index].type = INPUT_KEYBOARD
             input_events[event_index].ki = _KEYBDINPUT(
-                wVk=0,
-                wScan=code_unit,
-                dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                wVk=virtual_key,
+                wScan=scan_code,
+                dwFlags=flags,
                 time=0,
                 dwExtraInfo=_SCITYPE_EXTRA_INFO,
             )

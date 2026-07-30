@@ -1,0 +1,60 @@
+SciType 0.6.0 第三方组件与许可证说明
+======================================
+
+本文件说明 Windows 便携发布包中由构建工具带入的主要第三方组件。SciType
+自身的授权条款见同目录 LICENSE；第三方组件继续适用各自许可证，SciType
+许可证不会替代或限制这些第三方许可证授予的权利。
+
+1. PySide6 Essentials 6.11.1
+2. Shiboken6 6.11.1
+3. Qt 6.11.1 的 Qt Core、Qt GUI、Qt Widgets 及 Windows 平台插件
+
+版权归 The Qt Company Ltd.、Qt Project 贡献者及各自权利人所有。
+
+上述组件的发行元数据声明：
+
+  LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
+
+本发布包选择 GNU Lesser General Public License version 3
+(LGPL-3.0-only) 路径使用和分发这些组件。完整 LGPL v3 和其引用的 GPL v3
+正文位于：
+
+  third_party_licenses\LGPL-3.0.txt
+  third_party_licenses\GPL-3.0.txt
+
+Qt/PySide 官方许可信息：
+
+  https://doc.qt.io/qtforpython-6/licenses.html
+  https://doc.qt.io/qt-6/licensing.html
+  https://www.qt.io/licensing/open-source-lgpl-obligations
+
+Qt DLL 以动态链接形式保存在发布目录的 _internal 中。不得通过本项目条款
+限制用户为调试修改而进行的逆向工程；用户可以在自行承担兼容性风险的前提
+下，用接口兼容的修改版本替换这些动态库。SciType 不对替换后的组件提供
+保证或技术支持。
+
+Qt 本身包含或使用若干由各自权利人提供的第三方组件。对应版权、许可证和
+源码清单由 Qt Project 随 Qt 6.11.1 源码提供：
+
+  https://code.qt.io/cgit/qt/qtbase.git/tree/LICENSES?h=6.11.1
+  https://code.qt.io/cgit/qt/qtbase.git/tree/src/3rdparty?h=6.11.1
+
+本构建只导入 QtCore、QtGui 和 QtWidgets，不导入 QML、Qt Quick 或
+Qt WebEngine。发布前的自动检查会拒绝这些超出范围的模块。
+
+4. Python 3.12.10 runtime
+
+Copyright (c) Python Software Foundation and contributors.
+Python 按 Python Software Foundation License Version 2 分发：
+
+  https://docs.python.org/3.12/license.html
+
+5. PyInstaller bootloader 6.21.0
+
+Copyright (c) PyInstaller Development Team.
+PyInstaller bootloader 按 GPL-2.0-or-later 及其 Bootloader Exception
+分发；该例外允许用 PyInstaller 构建和分发非自由程序：
+
+  https://pyinstaller.org/en/v6.21.0/license.html
+
+本文件是第三方归属和许可证定位说明，不构成对具体分发场景的法律意见。

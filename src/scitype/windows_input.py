@@ -174,17 +174,24 @@ class WindowsInputAdapter:
 
     def handle_event(self, event: WindowsKeyEvent) -> AdapterDecision:
         """Return the action required for one physical key event."""
+        if not event.is_key_down:
+            if not event.is_scitype_injected:
+                self.fraction_session.observe_foreground(
+                    event.foreground_window,
+                )
+                # A physical key-up paired with a consumed key-down must stay
+                # consumed even if a long replacement is still being injected.
+                # Otherwise an Enter release can reach chat applications.
+                self._keys_down.discard(event.vk_code)
+                if event.vk_code in self._suppressed_keys:
+                    self._suppressed_keys.discard(event.vk_code)
+                    return AdapterDecision(InputAction.CONSUME)
+            return AdapterDecision(InputAction.PASS_THROUGH)
+
         if event.is_scitype_injected or self.is_injecting:
             return AdapterDecision(InputAction.PASS_THROUGH)
 
         self.fraction_session.observe_foreground(event.foreground_window)
-
-        if not event.is_key_down:
-            self._keys_down.discard(event.vk_code)
-            if event.vk_code in self._suppressed_keys:
-                self._suppressed_keys.discard(event.vk_code)
-                return AdapterDecision(InputAction.CONSUME)
-            return AdapterDecision(InputAction.PASS_THROUGH)
 
         if event.vk_code in self._keys_down:
             # Auto-repeat is allowed for normal pass-through keys. A key whose

@@ -12,7 +12,7 @@ $specPath = Join-Path $projectRoot "SciType.spec"
 $buildPath = Join-Path $projectRoot "build"
 $distPath = Join-Path $projectRoot "dist"
 $releaseRoot = Join-Path $projectRoot "release"
-$expectedVersion = "0.4.0"
+$expectedVersion = "0.6.0"
 $releaseName = "SciType-$expectedVersion-windows-x64"
 $releaseDirectory = Join-Path $releaseRoot $releaseName
 $zipPath = Join-Path $releaseRoot "$releaseName.zip"
@@ -95,9 +95,17 @@ try {
     }
 
     Invoke-CheckedPython `
-        -Arguments @("-c", "import scitype; import scitype.app") `
+        -Arguments @(
+            "-c",
+            (
+                "import scitype; import scitype.app; " +
+                "import scitype.settings_app; " +
+                "from PySide6 import QtCore, QtGui, QtWidgets; " +
+                "assert QtCore.qVersion() == '6.11.1'"
+            )
+        ) `
         -FailureMessage (
-            "当前 .venv 未正确安装 SciType；请先执行 " +
+            "当前 .venv 未正确安装 SciType 或 Qt GUI 依赖；请先执行 " +
             "'.\.venv\Scripts\python.exe -m pip install --editable "".[build]""'。"
         )
 
@@ -140,19 +148,35 @@ try {
 
     $distDirectory = Join-Path $distPath "SciType"
     $distExecutable = Join-Path $distDirectory "SciType.exe"
+    $distSettingsExecutable = Join-Path $distDirectory "SciTypeSettings.exe"
     if (-not (Test-Path -LiteralPath $distExecutable -PathType Leaf)) {
         throw "PyInstaller 未生成预期 EXE：$distExecutable"
     }
+    if (
+        -not (
+            Test-Path -LiteralPath $distSettingsExecutable -PathType Leaf
+        )
+    ) {
+        throw "PyInstaller 未生成预期 EXE：$distSettingsExecutable"
+    }
 
-    Write-Host "运行冻结程序的只读资源自检..."
-    $resourceCheck = Start-Process `
-        -FilePath $distExecutable `
-        -ArgumentList "--verify-resources" `
-        -WindowStyle Hidden `
-        -Wait `
-        -PassThru
-    if ($resourceCheck.ExitCode -ne 0) {
-        throw "冻结程序无法读取随包 JSON 或 LICENSE 资源。"
+    Write-Host "运行两个冻结程序的只读资源自检..."
+    foreach ($frozenExecutable in @(
+        $distExecutable,
+        $distSettingsExecutable
+    )) {
+        $resourceCheck = Start-Process `
+            -FilePath $frozenExecutable `
+            -ArgumentList "--verify-resources" `
+            -WindowStyle Hidden `
+            -Wait `
+            -PassThru
+        if ($resourceCheck.ExitCode -ne 0) {
+            throw (
+                "冻结程序无法读取随包 JSON 或许可证资源：" +
+                $frozenExecutable
+            )
+        }
     }
 
     New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
@@ -163,30 +187,66 @@ try {
         -LiteralPath (Join-Path $projectRoot "LICENSE") `
         -Destination (Join-Path $releaseDirectory "LICENSE")
     Copy-Item `
+        -LiteralPath (
+            Join-Path $projectRoot "packaging\THIRD_PARTY_NOTICES.txt"
+        ) `
+        -Destination (
+            Join-Path $releaseDirectory "THIRD_PARTY_NOTICES.txt"
+        )
+    Copy-Item `
+        -LiteralPath (
+            Join-Path $projectRoot "packaging\third_party_licenses"
+        ) `
+        -Destination (
+            Join-Path $releaseDirectory "third_party_licenses"
+        ) `
+        -Recurse
+    Copy-Item `
         -LiteralPath (Join-Path $projectRoot "packaging\README.txt") `
         -Destination (Join-Path $releaseDirectory "README.txt")
     Copy-Item `
         -LiteralPath (Join-Path $projectRoot "docs\symbols.md") `
         -Destination (Join-Path $releaseDirectory "symbols.md")
     Copy-Item `
+        -LiteralPath (Join-Path $projectRoot "docs\extension-packs.md") `
+        -Destination (Join-Path $releaseDirectory "extension-packs.md")
+    Copy-Item `
         -LiteralPath (Join-Path $projectRoot "packaging\open_log_folder.bat") `
         -Destination (Join-Path $releaseDirectory "open_log_folder.bat")
 
     $releaseExecutable = Join-Path $releaseDirectory "SciType.exe"
-    $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo(
-        $releaseExecutable
+    $releaseSettingsExecutable = Join-Path `
+        $releaseDirectory `
+        "SciTypeSettings.exe"
+    $versionExpectations = @(
+        @{
+            Path = $releaseExecutable
+            Description = "SciType 理科符号快捷输入工具"
+        },
+        @{
+            Path = $releaseSettingsExecutable
+            Description = "SciType 用户绑定设置"
+        }
     )
-    if (
-        $versionInfo.ProductName -ne "SciType" -or
-        $versionInfo.FileDescription -ne "SciType 理科符号快捷输入工具" -or
-        $versionInfo.FileVersion -ne $expectedVersion -or
-        $versionInfo.ProductVersion -ne $expectedVersion -or
-        $versionInfo.LegalCopyright -ne "Copyright (c) 2026 Y1n1N1"
-    ) {
-        throw (
-            "SciType.exe 版本资源不符合 0.4.0 发布要求：" +
-            "`n$($versionInfo | Format-List | Out-String)"
+    foreach ($expectation in $versionExpectations) {
+        $versionInfo = (
+            [System.Diagnostics.FileVersionInfo]::GetVersionInfo(
+                $expectation.Path
+            )
         )
+        if (
+            $versionInfo.ProductName -ne "SciType" -or
+            $versionInfo.FileDescription -ne $expectation.Description -or
+            $versionInfo.FileVersion -ne $expectedVersion -or
+            $versionInfo.ProductVersion -ne $expectedVersion -or
+            $versionInfo.LegalCopyright -ne "Copyright (c) 2026 Y1n1N1"
+        ) {
+            throw (
+                "$($expectation.Path) 版本资源不符合 $expectedVersion " +
+                "发布要求：`n" +
+                "$($versionInfo | Format-List | Out-String)"
+            )
+        }
     }
 
     Compress-Archive `
@@ -213,11 +273,17 @@ try {
     $exeHash = (
         Get-FileHash -LiteralPath $releaseExecutable -Algorithm SHA256
     ).Hash.ToLowerInvariant()
+    $settingsExeHash = (
+        Get-FileHash `
+            -LiteralPath $releaseSettingsExecutable `
+            -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
     $zipHash = (
         Get-FileHash -LiteralPath $zipPath -Algorithm SHA256
     ).Hash.ToLowerInvariant()
     $hashLines = @(
         "$exeHash  $releaseName/SciType.exe",
+        "$settingsExeHash  $releaseName/SciTypeSettings.exe",
         "$zipHash  $releaseName.zip"
     )
     [System.IO.File]::WriteAllLines(

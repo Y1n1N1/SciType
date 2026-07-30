@@ -27,6 +27,14 @@ class SymbolDefinition:
     output: str
 
 
+@dataclass(frozen=True, slots=True)
+class ShortcutBindingDefinition:
+    """One packaged trigger-to-symbol reference."""
+
+    trigger: str
+    symbol_id: str
+
+
 _SYMBOL_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]*$")
 
 
@@ -189,12 +197,12 @@ def load_symbol_catalog(
     return catalog
 
 
-def load_bindings(
+def load_binding_definitions(
     path: str | Path | None = None,
     *,
     catalog: dict[str, SymbolDefinition] | None = None,
-) -> dict[str, str]:
-    """Load trigger-to-symbol bindings and resolve their output templates."""
+) -> tuple[ShortcutBindingDefinition, ...]:
+    """Load and validate packaged trigger-to-symbol references."""
     active_catalog = load_symbol_catalog() if catalog is None else catalog
     entries = _require_entries(
         _read_json(
@@ -204,7 +212,7 @@ def load_bindings(
         ),
         label="快捷绑定",
     )
-    bindings: dict[str, str] = {}
+    definitions: list[ShortcutBindingDefinition] = []
     first_positions: dict[str, int] = {}
 
     for position, entry in enumerate(entries, start=1):
@@ -232,7 +240,7 @@ def load_bindings(
             raise DictionaryError(
                 f"快捷绑定第 {position} 项的 symbol_id 不能为空。",
             )
-        if trigger in bindings:
+        if trigger in first_positions:
             first_position = first_positions[trigger]
             raise DictionaryError(
                 f"快捷绑定第 {position} 项的 trigger“{trigger}”重复；"
@@ -244,9 +252,30 @@ def load_bindings(
                 f"id“{symbol_id}”。",
             )
 
-        bindings[trigger] = active_catalog[symbol_id].output
+        definitions.append(
+            ShortcutBindingDefinition(
+                trigger=trigger,
+                symbol_id=symbol_id,
+            ),
+        )
         first_positions[trigger] = position
 
+    return tuple(definitions)
+
+
+def load_bindings(
+    path: str | Path | None = None,
+    *,
+    catalog: dict[str, SymbolDefinition] | None = None,
+) -> dict[str, str]:
+    """Load trigger-to-symbol bindings and resolve their output templates."""
+    active_catalog = load_symbol_catalog() if catalog is None else catalog
+    definitions = load_binding_definitions(path, catalog=active_catalog)
+    bindings: dict[str, str] = {}
+    for definition in definitions:
+        bindings[definition.trigger] = active_catalog[
+            definition.symbol_id
+        ].output
     return bindings
 
 
