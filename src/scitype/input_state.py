@@ -1,9 +1,10 @@
 """Operating-system-independent symbol input state machine."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import TypeGuard
 
+from .binding_rules import is_trigger_body_character
 from .engine import parse_text
 
 
@@ -55,9 +56,15 @@ class InputResult:
 class SymbolInputStateMachine:
     """Collect one slash command while temporarily in SYMBOL state."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        dictionary: Mapping[str, str] | None = None,
+    ) -> None:
         self.state = InputState.NORMAL
         self._buffer = ""
+        self._dictionary = (
+            None if dictionary is None else dict(dictionary)
+        )
 
     @property
     def buffer(self) -> str:
@@ -79,7 +86,8 @@ class SymbolInputStateMachine:
         return self._result(InputAction.PASS_THROUGH)
 
     def _handle_symbol(self, event: KeyEvent | str) -> InputResult:
-        if self._is_lowercase_letter(event):
+        if is_trigger_body_character(event):
+            assert isinstance(event, str)
             self._buffer += event
             return self._result(InputAction.CONSUME)
 
@@ -110,7 +118,7 @@ class SymbolInputStateMachine:
         return self._restore_pending_text()
 
     def _commit(self, command: str) -> InputResult:
-        output = parse_text(command)
+        output = parse_text(command, self._dictionary)
         self._reset()
         return self._result(InputAction.INSERT_TEXT, output)
 
@@ -132,14 +140,6 @@ class SymbolInputStateMachine:
             action=action,
             state=self.state,
             insert_text=insert_text,
-        )
-
-    @staticmethod
-    def _is_lowercase_letter(event: KeyEvent | str) -> TypeGuard[str]:
-        return (
-            isinstance(event, str)
-            and len(event) == 1
-            and "a" <= event <= "z"
         )
 
     @staticmethod

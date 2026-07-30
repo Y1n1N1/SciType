@@ -30,6 +30,12 @@
     "output": "√(${cursor})"
   },
   {
+    "id": "structure.fraction_basic",
+    "name": "基础分式",
+    "category": "结构输入",
+    "output": "(${cursor})/()"
+  },
+  {
     "id": "relation.infinity",
     "name": "无穷",
     "category": "比较与关系",

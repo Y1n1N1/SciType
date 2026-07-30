@@ -2,6 +2,7 @@
 
 import unittest
 
+from scitype.fraction import FRACTION_TEMPLATE
 from scitype.input_state import (
     InputAction,
     InputResult,
@@ -20,6 +21,21 @@ def run_events(
 
 
 class SymbolInputStateMachineTests(unittest.TestCase):
+    def test_explicit_dictionary_snapshot_is_used_for_commits(self) -> None:
+        bindings = {"/my": "自定义${cursor}内容"}
+        machine = SymbolInputStateMachine(bindings)
+        bindings["/my"] = "后来修改"
+
+        result = run_events(
+            machine,
+            [KeyEvent.SLASH, "m", "y", KeyEvent.SPACE],
+        )[-1]
+
+        self.assertEqual(result.action, InputAction.INSERT_TEXT)
+        self.assertEqual(result.insert_text, "自定义${cursor}内容")
+        self.assertEqual(machine.state, InputState.NORMAL)
+        self.assertEqual(machine.buffer, "")
+
     def test_legacy_phi_alias_commits_on_space(self) -> None:
         machine = SymbolInputStateMachine()
 
@@ -46,6 +62,21 @@ class SymbolInputStateMachineTests(unittest.TestCase):
         self.assertEqual(result.insert_text, "|${cursor}|")
         self.assertEqual(result.state, InputState.NORMAL)
         self.assertEqual(machine.buffer, "")
+
+    def test_fraction_command_commits_on_space_or_enter(self) -> None:
+        for confirmation in (KeyEvent.SPACE, KeyEvent.ENTER):
+            with self.subTest(confirmation=confirmation):
+                machine = SymbolInputStateMachine()
+
+                result = run_events(
+                    machine,
+                    [KeyEvent.SLASH, "f", "s", confirmation],
+                )[-1]
+
+                self.assertTrue(result.should_insert)
+                self.assertEqual(result.insert_text, FRACTION_TEMPLATE)
+                self.assertEqual(result.state, InputState.NORMAL)
+                self.assertEqual(machine.buffer, "")
 
     def test_unknown_command_is_inserted_unchanged(self) -> None:
         machine = SymbolInputStateMachine()
@@ -186,19 +217,31 @@ class SymbolInputStateMachineTests(unittest.TestCase):
         self.assertEqual(pass_normal.action, InputAction.PASS_THROUGH)
         self.assertEqual(machine.buffer, "")
 
-    def test_digit_restores_pending_text_without_duplication(self) -> None:
-        machine = SymbolInputStateMachine()
+    def test_digit_is_collected_for_explicit_user_trigger(self) -> None:
+        machine = SymbolInputStateMachine({"/x1": "数字命令"})
 
         result = run_events(
             machine,
-            [KeyEvent.SLASH, "x", "1"],
+            [KeyEvent.SLASH, "x", "1", KeyEvent.SPACE],
         )[-1]
 
         self.assertEqual(result.action, InputAction.INSERT_TEXT)
         self.assertTrue(result.should_intercept)
-        self.assertEqual(result.insert_text, "/x1")
-        self.assertEqual(result.insert_text.count("1"), 1)
+        self.assertEqual(result.insert_text, "数字命令")
         self.assertEqual(result.state, InputState.NORMAL)
+        self.assertEqual(machine.buffer, "")
+
+    def test_unknown_digit_trigger_is_returned_on_confirmation(self) -> None:
+        machine = SymbolInputStateMachine()
+
+        result = run_events(
+            machine,
+            [KeyEvent.SLASH, "x", "1", KeyEvent.SPACE],
+        )[-1]
+
+        self.assertEqual(result.action, InputAction.INSERT_TEXT)
+        self.assertEqual(result.insert_text, "/x1")
+        self.assertEqual(machine.state, InputState.NORMAL)
         self.assertEqual(machine.buffer, "")
 
     def test_punctuation_restores_pending_text_without_duplication(self) -> None:

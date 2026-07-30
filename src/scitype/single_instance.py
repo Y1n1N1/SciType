@@ -13,6 +13,7 @@ from typing import Protocol
 
 
 ERROR_ALREADY_EXISTS = 183
+ERROR_FILE_NOT_FOUND = 2
 
 
 def build_mutex_name(user_identity: str) -> str:
@@ -56,6 +57,13 @@ class MutexBackend(Protocol):
         """Close a mutex handle."""
 
 
+class MutexProbeBackend(Protocol):
+    """Read-only named-mutex probe used by the settings application."""
+
+    def mutex_exists(self, name: str) -> bool:
+        """Return whether an existing process holds the named mutex."""
+
+
 class Win32MutexBackend:
     """ctypes implementation of the named-mutex operations."""
 
@@ -90,6 +98,43 @@ class Win32MutexBackend:
         """Release one CreateMutexW handle."""
         if not self._kernel32.CloseHandle(handle):
             raise ctypes.WinError(ctypes.get_last_error())
+
+
+class Win32MutexProbeBackend:
+    """Open an existing mutex briefly without creating or acquiring it."""
+
+    _SYNCHRONIZE = 0x00100000
+
+    def __init__(self) -> None:
+        if sys.platform != "win32":
+            raise OSError("SciType Windows 单实例探测仅支持 Windows")
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32.OpenMutexW.argtypes = [
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.LPCWSTR,
+        ]
+        self._kernel32.OpenMutexW.restype = wintypes.HANDLE
+        self._kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        self._kernel32.CloseHandle.restype = wintypes.BOOL
+
+    def mutex_exists(self, name: str) -> bool:
+        ctypes.set_last_error(0)
+        handle = self._kernel32.OpenMutexW(
+            self._SYNCHRONIZE,
+            False,
+            name,
+        )
+        if not handle:
+            last_error = ctypes.get_last_error()
+            if last_error == ERROR_FILE_NOT_FOUND:
+                return False
+            raise ctypes.WinError(last_error)
+        try:
+            return True
+        finally:
+            if not self._kernel32.CloseHandle(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
 
 
 class SingleInstanceLock:
@@ -142,3 +187,18 @@ class SingleInstanceLock:
         traceback: object,
     ) -> None:
         self.close()
+
+
+def probe_existing_instance(
+    *,
+    name: str | None = None,
+    backend: MutexProbeBackend | None = None,
+) -> bool | None:
+    """Probe the shared mutex without creating, acquiring or retaining it."""
+    try:
+        active_backend = backend or Win32MutexProbeBackend()
+        return active_backend.mutex_exists(
+            name or current_user_mutex_name(),
+        )
+    except (OSError, ValueError):
+        return None

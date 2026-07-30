@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "SciType"
-version = "0.4.0"
+version = "0.6.0"
 description = "A Chinese-first scientific symbol abbreviation parser."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,11 @@ license-files = ["LICENSE"]
 dependencies = []
 
 [project.optional-dependencies]
-build = ["PyInstaller==6.21.0"]
+gui = ["PySide6-Essentials==6.11.1"]
+build = [
+    "PyInstaller==6.21.0",
+    "PySide6-Essentials==6.11.1",
+]
 
 [tool.setuptools]
 package-dir = { "" = "src" }

@@ -98,7 +98,7 @@ class DictionaryTests(unittest.TestCase):
     def test_invalid_trigger_formats_are_rejected(self) -> None:
         cases = [
             ("xw", "必须以 / 开头"),
-            ("/XW", "不符合 V0.1 规则"),
+            ("/XW", "格式非法"),
         ]
 
         with tempfile.TemporaryDirectory(dir=_TEST_DIRECTORY) as temporary_directory:
@@ -112,6 +112,17 @@ class DictionaryTests(unittest.TestCase):
 
                     with self.assertRaisesRegex(DictionaryError, expected_message):
                         load_dictionary(path)
+
+    def test_trigger_body_can_include_ascii_digits(self) -> None:
+        entries = [{"trigger": "/a12", "output": "数字触发"}]
+
+        with tempfile.TemporaryDirectory(dir=_TEST_DIRECTORY) as temporary_directory:
+            path = self._write_dictionary(
+                temporary_directory,
+                json.dumps(entries, ensure_ascii=False),
+            )
+
+            self.assertEqual(load_dictionary(path)["/a12"], "数字触发")
 
     def test_malformed_json_is_rejected(self) -> None:
         malformed_json = '[{"trigger": "/xw", "output": "φ"}'

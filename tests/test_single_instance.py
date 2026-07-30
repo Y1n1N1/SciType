@@ -8,6 +8,7 @@ from scitype.single_instance import (
     SingleInstanceLock,
     build_mutex_name,
     mutex_already_exists,
+    probe_existing_instance,
 )
 
 
@@ -26,6 +27,16 @@ class _FakeMutexBackend:
 
     def close_handle(self, handle: int) -> None:
         self.closed_handles.append(handle)
+
+
+class _FakeProbeBackend:
+    def __init__(self, exists: bool) -> None:
+        self.exists = exists
+        self.names: list[str] = []
+
+    def mutex_exists(self, name: str) -> bool:
+        self.names.append(name)
+        return self.exists
 
 
 class SingleInstanceTests(unittest.TestCase):
@@ -76,6 +87,17 @@ class SingleInstanceTests(unittest.TestCase):
                 raise RuntimeError("simulated")
 
         self.assertEqual(backend.closed_handles, [2468])
+
+    def test_read_only_probe_reuses_name_without_creating_a_mutex(self) -> None:
+        backend = _FakeProbeBackend(True)
+
+        detected = probe_existing_instance(
+            name="Local\\SciType-test",
+            backend=backend,
+        )
+
+        self.assertTrue(detected)
+        self.assertEqual(backend.names, ["Local\\SciType-test"])
 
 
 if __name__ == "__main__":

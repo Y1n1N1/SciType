@@ -2,14 +2,16 @@
 
 ## 构建边界
 
-V0.4a 使用 PyInstaller 6.21.0 的 `onedir` 模式。`SciType.exe` 是无控制台
-窗口的正式入口，Python 运行库和依赖位于同级 `_internal` 目录。发布包不
-依赖开发机上的 Python、虚拟环境或项目源码路径。
+V0.6 使用 PyInstaller 6.21.0 的共享 `onedir` 模式。`SciType.exe` 是无
+控制台窗口的后台输入入口，`SciTypeSettings.exe` 是独立 Qt Widgets 设置
+入口；Python 和 Qt 动态库位于同级 `_internal` 目录。发布包不依赖开发机
+上的 Python、虚拟环境或项目源码路径。
 
-PyInstaller 只属于 `build` 可选依赖，不是 SciType 的运行时依赖。构建未
-启用 UPX，当前没有代码签名，也没有自定义图标；`SciType.spec` 中的
-`packaging/SciType.ico` 是未来替换图标的位置，不存在时使用 PyInstaller
-默认图标。
+`build` 可选依赖固定 PyInstaller 6.21.0 和 PySide6 Essentials 6.11.1。
+设置程序只导入 QtCore、QtGui 和 QtWidgets，不使用 QML、Qt Quick 或
+Qt WebEngine。构建未启用 UPX，没有代码签名，也没有自定义图标；
+`SciType.spec` 中的 `packaging/SciType.ico` 是未来替换图标的位置，
+不存在时使用 PyInstaller 默认图标。
 
 ## 本地构建
 
@@ -32,21 +34,26 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\build_wi
 
 构建脚本会依次检查 64 位 Python、项目安装和 PyInstaller 版本，安全清理
 项目内旧的 `build`、`dist`、`release`，运行全部自动测试，执行
-`SciType.spec`，运行冻结程序的只读资源自检，复制用户文档，验证目录和
-ZIP 内容、版本资源、许可证以及敏感路径，最后生成 SHA-256 哈希。
+`SciType.spec`，分别运行两个冻结程序的只读资源自检，复制用户文档和第三
+方声明，验证目录和 ZIP 内容、两个版本资源、许可证、Qt 模块范围以及敏感
+路径，最后生成 SHA-256 哈希。
 
 预期产物：
 
 ```text
 release/
-├── SciType-0.4.0-windows-x64/
+├── SciType-0.6.0-windows-x64/
 │   ├── SciType.exe
+│   ├── SciTypeSettings.exe
 │   ├── _internal/
 │   ├── LICENSE
+│   ├── THIRD_PARTY_NOTICES.txt
+│   ├── third_party_licenses/
 │   ├── README.txt
 │   ├── symbols.md
+│   ├── extension-packs.md
 │   └── open_log_folder.bat
-├── SciType-0.4.0-windows-x64.zip
+├── SciType-0.6.0-windows-x64.zip
 └── SHA256SUMS.txt
 ```
 
@@ -54,8 +61,19 @@ release/
 
 构建脚本可以自动确认文件存在、JSON 包资源可读取、LICENSE 一致、ZIP
 可解压、版本信息正确、敏感开发路径未泄漏，以及自动测试通过。真实全局
-键盘 Hook、不同输入法状态、目标软件兼容性、无 Python 机器运行情况和
-安全软件表现必须人工验证，不能由单元测试代替。
+键盘 Hook、不同输入法状态、目标软件兼容性、设置窗口实际交互、无 Python
+机器运行情况和安全软件表现必须人工验证，不能由单元测试代替。
+
+## Qt 与第三方许可证
+
+PySide6 Essentials 6.11.1、Shiboken6 6.11.1 以及本构建使用的 Qt 6.11.1
+组件按其发行元数据提供 LGPL-3.0-only、GPL-2.0-only 或 GPL-3.0-only
+选择。本发布包选择 LGPL v3 路径，以可替换 DLL 的动态链接形式分发 Qt。
+
+发布目录必须保留 `THIRD_PARTY_NOTICES.txt`、`third_party_licenses`、
+`LICENSE` 和 `_internal`。详细组件、官方来源与动态链接说明见
+`packaging/THIRD_PARTY_NOTICES.txt`。这些说明不是对具体分发场景的法律
+意见；公开分发前仍应由发布者确认全部实际携带二进制的许可证义务。
 
 ## 发布前人工测试
 
@@ -79,6 +97,24 @@ release/
 14. 将整个发布目录移动到其他位置后重复启动和输入测试。
 15. 分别在中文输入法中文模式和英文模式重复第 2–10 步，记录字符重复、
     漏字、吞键、光标偏移或明显延迟。
+16. 双击 `SciTypeSettings.exe`，使用虚构内容创建、编辑、停用和删除绑定。
+17. 关闭并重开设置程序，确认多行文本、Unicode、颜文字和单个
+    `${cursor}` 完整保留。
+18. 用一条含内部换行的测试绑定按 `Enter` 确认，确认 replacement 的段落
+    换行完整保留、确认键不产生额外尾部换行，随后主动按下的 `Enter` 正常
+    工作。
+19. 测试 trigger 冲突、多个 `${cursor}`、未保存切换和关闭提示。
+20. 在隔离的临时 `LOCALAPPDATA` 中损坏配置，确认 GUI 不崩溃、不覆盖原
+    文件且可打开配置文件夹。
+21. 确认关闭设置程序不会结束已运行的后台 SciType；保存后重启后台程序，
+    确认新绑定才生效。
+22. 检查“我的绑定”“词典”“设置”三个一级入口，确认页面导航和绑定列表
+    不在同一层级。
+23. 在词典页搜索“积分”，确认 `/jf` 的纯文本预览为 `∫│dx`。
+24. 在隔离的 `%LOCALAPPDATA%\SciType\packs\` 中放入合法和损坏 JSON，
+    确认合法包可搜索，损坏包保留且不影响基础词典。
+25. 导入同 pack id 文件时确认必须明确选择是否替换。
+26. 分别以 100%、125% 和 150% 缩放检查中文、按钮和输入框无重叠或裁切。
 
 未执行的人工项目必须在发布记录中明确标注“未验证”，不能用自动测试通过
 代替。

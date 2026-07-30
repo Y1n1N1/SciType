@@ -6,6 +6,7 @@ import ctypes
 from ctypes import wintypes
 import logging
 import sys
+import time
 
 from .input_state import InputAction, InputState
 from .windows_input import (
@@ -24,6 +25,7 @@ from .windows_input import (
     VK_RMENU,
     VK_RSHIFT,
     VK_RWIN,
+    VK_RETURN,
     VK_SHIFT,
     WindowsInputAdapter,
     WindowsKeyEvent,
@@ -32,11 +34,18 @@ from .windows_input import (
 
 
 WH_KEYBOARD_LL = 13
+WH_MOUSE_LL = 14
 HC_ACTION = 0
 WM_KEYDOWN = 0x0100
 WM_KEYUP = 0x0101
 WM_SYSKEYDOWN = 0x0104
 WM_SYSKEYUP = 0x0105
+WM_LBUTTONDOWN = 0x0201
+WM_RBUTTONDOWN = 0x0204
+WM_MBUTTONDOWN = 0x0207
+WM_MOUSEWHEEL = 0x020A
+WM_XBUTTONDOWN = 0x020B
+WM_MOUSEHWHEEL = 0x020E
 
 LLKHF_INJECTED = 0x00000010
 INPUT_KEYBOARD = 1
@@ -45,9 +54,23 @@ KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 VK_CAPITAL = 0x14
 VK_LEFT = 0x25
+VK_RIGHT = 0x27
+
+_FRACTION_CANCEL_MOUSE_MESSAGES = frozenset(
+    (
+        WM_LBUTTONDOWN,
+        WM_RBUTTONDOWN,
+        WM_MBUTTONDOWN,
+        WM_MOUSEWHEEL,
+        WM_XBUTTONDOWN,
+        WM_MOUSEHWHEEL,
+    ),
+)
 
 _SCITYPE_EXTRA_INFO = 0x53434954
 _NO_STATE_CHANGE = 0x0004
+_TEXT_COMMIT_SETTLE_SECONDS = 0.05
+_ARROW_EVENT_INTERVAL_SECONDS = 0.005
 
 _ULONG_PTR = ctypes.c_size_t
 _LRESULT = ctypes.c_ssize_t
@@ -130,6 +153,7 @@ class Win32KeyboardHook:
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
         self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self._hook_handle: int | None = None
+        self._mouse_hook_handle: int | None = None
         self._fatal_error: BaseException | None = None
 
         hook_proc_type = ctypes.WINFUNCTYPE(
@@ -140,6 +164,7 @@ class Win32KeyboardHook:
         )
         self._hook_proc_type = hook_proc_type
         self._callback = hook_proc_type(self._hook_callback)
+        self._mouse_callback = hook_proc_type(self._mouse_hook_callback)
         self._configure_api()
 
     def run(self) -> None:
@@ -172,29 +197,56 @@ class Win32KeyboardHook:
 
     def close(self) -> None:
         """Release the global hook; safe to call more than once."""
-        if self._hook_handle is None:
-            return
+        self.adapter.cancel_fraction_session()
+        errors: list[OSError] = []
+        released_any = False
 
-        hook_handle = self._hook_handle
-        self._hook_handle = None
-        if not self._user32.UnhookWindowsHookEx(hook_handle):
-            raise ctypes.WinError(ctypes.get_last_error())
-        self._logger.info("Hook 已释放")
+        for attribute_name in ("_mouse_hook_handle", "_hook_handle"):
+            hook_handle = getattr(self, attribute_name)
+            if hook_handle is None:
+                continue
+
+            setattr(self, attribute_name, None)
+            if self._user32.UnhookWindowsHookEx(hook_handle):
+                released_any = True
+            else:
+                errors.append(ctypes.WinError(ctypes.get_last_error()))
+
+        if released_any:
+            self._logger.info("Hook 已释放")
+        if errors:
+            raise errors[0]
 
     def _install(self) -> None:
-        if self._hook_handle is not None:
+        if (
+            self._hook_handle is not None
+            and self._mouse_hook_handle is not None
+        ):
             return
 
         module_handle = self._kernel32.GetModuleHandleW(None)
-        hook_handle = self._user32.SetWindowsHookExW(
-            WH_KEYBOARD_LL,
-            self._callback,
-            module_handle,
-            0,
-        )
-        if not hook_handle:
-            raise ctypes.WinError(ctypes.get_last_error())
-        self._hook_handle = hook_handle
+        if self._hook_handle is None:
+            hook_handle = self._user32.SetWindowsHookExW(
+                WH_KEYBOARD_LL,
+                self._callback,
+                module_handle,
+                0,
+            )
+            if not hook_handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            self._hook_handle = hook_handle
+
+        if self._mouse_hook_handle is None:
+            mouse_hook_handle = self._user32.SetWindowsHookExW(
+                WH_MOUSE_LL,
+                self._mouse_callback,
+                module_handle,
+                0,
+            )
+            if not mouse_hook_handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            self._mouse_hook_handle = mouse_hook_handle
+
         self._logger.info("Hook 已安装")
 
     def _hook_callback(
@@ -225,6 +277,7 @@ class Win32KeyboardHook:
                 hook_data.dwExtraInfo == _SCITYPE_EXTRA_INFO
             )
             modifiers = self._modifier_state()
+            foreground_window = self._user32.GetForegroundWindow()
             translated_text = None
             if (
                 is_key_down
@@ -244,6 +297,11 @@ class Win32KeyboardHook:
                     is_scitype_injected=is_scitype_injected,
                     text=translated_text,
                     modifiers=modifiers,
+                    foreground_window=(
+                        int(foreground_window)
+                        if foreground_window
+                        else None
+                    ),
                 ),
             )
             return self._execute_decision(
@@ -254,6 +312,25 @@ class Win32KeyboardHook:
             )
         except BaseException as error:
             return self._fail_open(error, n_code, w_param, l_param)
+
+    def _mouse_hook_callback(
+        self,
+        n_code: int,
+        w_param: int,
+        l_param: int,
+    ) -> int:
+        try:
+            if (
+                n_code >= HC_ACTION
+                and w_param in _FRACTION_CANCEL_MOUSE_MESSAGES
+            ):
+                self.adapter.cancel_fraction_session()
+        except BaseException as error:
+            if self._fatal_error is None:
+                self._fatal_error = error
+            self._user32.PostQuitMessage(1)
+
+        return self._call_next_mouse(n_code, w_param, l_param)
 
     def _execute_decision(
         self,
@@ -269,6 +346,16 @@ class Win32KeyboardHook:
         if decision.action is InputAction.PASS_THROUGH:
             return self._call_next(n_code, w_param, l_param)
 
+        if decision.cursor_right_moves > 0:
+            try:
+                with self.adapter.injection_guard():
+                    self._send_right_keys(decision.cursor_right_moves)
+            except Exception as error:
+                _print_error(
+                    "SciType：分式光标跳转失败；监听将安全停止。"
+                )
+                return self._stop_and_consume(error)
+
         if decision.action is InputAction.INSERT_TEXT:
             try:
                 with self.adapter.injection_guard():
@@ -277,6 +364,7 @@ class Win32KeyboardHook:
                         self._send_unicode_text,
                         self._send_left_keys,
                     )
+                self.adapter.complete_insertion(decision, outcome)
             except CursorPlacementError as error:
                 _print_error(
                     "SciType：文本已插入，但真实光标定位失败；"
@@ -314,6 +402,19 @@ class Win32KeyboardHook:
     def _call_next(self, n_code: int, w_param: int, l_param: int) -> int:
         return self._user32.CallNextHookEx(
             self._hook_handle,
+            n_code,
+            w_param,
+            l_param,
+        )
+
+    def _call_next_mouse(
+        self,
+        n_code: int,
+        w_param: int,
+        l_param: int,
+    ) -> int:
+        return self._user32.CallNextHookEx(
+            self._mouse_hook_handle,
             n_code,
             w_param,
             l_param,
@@ -389,32 +490,43 @@ class Win32KeyboardHook:
             keyboard_state[VK_MENU] = 0x80
 
     def _send_unicode_text(self, text: str) -> None:
-        utf16 = text.encode("utf-16-le", errors="surrogatepass")
-        code_units = [
-            int.from_bytes(utf16[index : index + 2], "little")
-            for index in range(0, len(utf16), 2)
-        ]
-        if not code_units:
+        normalized_text = text.replace("\r\n", "\n").replace("\r", "\n")
+        if not normalized_text:
             return
 
-        input_events = (_INPUT * (len(code_units) * 2))()
-        event_index = 0
-        for code_unit in code_units:
-            input_events[event_index].type = INPUT_KEYBOARD
-            input_events[event_index].ki = _KEYBDINPUT(
-                wVk=0,
-                wScan=code_unit,
-                dwFlags=KEYEVENTF_UNICODE,
-                time=0,
-                dwExtraInfo=_SCITYPE_EXTRA_INFO,
-            )
-            event_index += 1
+        event_pairs: list[tuple[int, int, int]] = []
+        for character in normalized_text:
+            if character == "\n":
+                # KEYEVENTF_UNICODE with U+000A is ignored by common editors
+                # such as Notepad. A marked Enter pair preserves line breaks
+                # while still bypassing SciType's own Hook.
+                event_pairs.append((VK_RETURN, 0, 0))
+                event_pairs.append((VK_RETURN, 0, KEYEVENTF_KEYUP))
+                continue
 
+            utf16 = character.encode("utf-16-le", errors="surrogatepass")
+            for index in range(0, len(utf16), 2):
+                code_unit = int.from_bytes(
+                    utf16[index : index + 2],
+                    "little",
+                )
+                event_pairs.append((0, code_unit, KEYEVENTF_UNICODE))
+                event_pairs.append(
+                    (
+                        0,
+                        code_unit,
+                        KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                    ),
+                )
+
+        input_events = (_INPUT * len(event_pairs))()
+        event_index = 0
+        for virtual_key, scan_code, flags in event_pairs:
             input_events[event_index].type = INPUT_KEYBOARD
             input_events[event_index].ki = _KEYBDINPUT(
-                wVk=0,
-                wScan=code_unit,
-                dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                wVk=virtual_key,
+                wScan=scan_code,
+                dwFlags=flags,
                 time=0,
                 dwExtraInfo=_SCITYPE_EXTRA_INFO,
             )
@@ -423,35 +535,61 @@ class Win32KeyboardHook:
         self._send_input_events(input_events, operation="文本插入")
 
     def _send_left_keys(self, left_moves: int) -> None:
-        if left_moves < 0:
-            raise ValueError("光标左移次数不能为负数")
-        if left_moves == 0:
+        if left_moves > 0:
+            # Some editors commit injected Unicode asynchronously.  A tiny
+            # pause prevents the positioning keys from racing that commit.
+            time.sleep(_TEXT_COMMIT_SETTLE_SECONDS)
+        self._send_arrow_keys(
+            VK_LEFT,
+            left_moves,
+            direction="左移",
+        )
+
+    def _send_right_keys(self, right_moves: int) -> None:
+        self._send_arrow_keys(
+            VK_RIGHT,
+            right_moves,
+            direction="右移",
+        )
+
+    def _send_arrow_keys(
+        self,
+        virtual_key: int,
+        move_count: int,
+        *,
+        direction: str,
+    ) -> None:
+        if move_count < 0:
+            raise ValueError(f"光标{direction}次数不能为负数")
+        if move_count == 0:
             return
 
-        input_events = (_INPUT * (left_moves * 2))()
-        event_index = 0
-        for _ in range(left_moves):
-            input_events[event_index].type = INPUT_KEYBOARD
-            input_events[event_index].ki = _KEYBDINPUT(
-                wVk=VK_LEFT,
+        for move_index in range(move_count):
+            input_events = (_INPUT * 2)()
+            input_events[0].type = INPUT_KEYBOARD
+            input_events[0].ki = _KEYBDINPUT(
+                wVk=virtual_key,
                 wScan=0,
                 dwFlags=KEYEVENTF_EXTENDEDKEY,
                 time=0,
                 dwExtraInfo=_SCITYPE_EXTRA_INFO,
             )
-            event_index += 1
 
-            input_events[event_index].type = INPUT_KEYBOARD
-            input_events[event_index].ki = _KEYBDINPUT(
-                wVk=VK_LEFT,
+            input_events[1].type = INPUT_KEYBOARD
+            input_events[1].ki = _KEYBDINPUT(
+                wVk=virtual_key,
                 wScan=0,
                 dwFlags=KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP,
                 time=0,
                 dwExtraInfo=_SCITYPE_EXTRA_INFO,
             )
-            event_index += 1
 
-        self._send_input_events(input_events, operation="光标移动")
+            self._send_input_events(
+                input_events,
+                operation=f"光标{direction}",
+            )
+            if move_index + 1 < move_count:
+                time.sleep(_ARROW_EVENT_INTERVAL_SECONDS)
 
     def _send_input_events(
         self,

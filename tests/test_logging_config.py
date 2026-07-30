@@ -11,8 +11,10 @@ from scitype.logging_config import (
     get_log_path,
 )
 from scitype.windows_input import (
+    InsertionOutcome,
     VK_OEM_2,
     VK_SPACE,
+    VK_TAB,
     WindowsInputAdapter,
     WindowsKeyEvent,
 )
@@ -108,6 +110,69 @@ class LoggingConfigurationTests(unittest.TestCase):
 
             self.assertTrue(log_path.exists())
             self.assertTrue(Path(f"{log_path}.1").exists())
+
+    def test_fraction_session_does_not_log_formula_or_window_data(self) -> None:
+        with tempfile.TemporaryDirectory(
+            dir=_TEST_DIRECTORY,
+        ) as temporary_directory:
+            log_path = Path(temporary_directory, "scitype.log")
+            logger = configure_logging(
+                log_path,
+                logger_name=f"scitype.fraction.privacy.{id(self)}",
+            )
+            try:
+                logger.info("程序启动")
+                adapter = WindowsInputAdapter()
+                window = 8123
+                decision = None
+                for vk_code in (VK_OEM_2, 0x46, 0x53, VK_SPACE):
+                    decision = adapter.handle_event(
+                        WindowsKeyEvent(
+                            vk_code,
+                            is_key_down=True,
+                            foreground_window=window,
+                        ),
+                    )
+                    adapter.handle_event(
+                        WindowsKeyEvent(
+                            vk_code,
+                            is_key_down=False,
+                            foreground_window=window,
+                        ),
+                    )
+
+                assert decision is not None
+                adapter.complete_insertion(
+                    decision,
+                    InsertionOutcome.PRIMARY,
+                )
+                for _ in range(2):
+                    adapter.handle_event(
+                        WindowsKeyEvent(
+                            VK_TAB,
+                            is_key_down=True,
+                            foreground_window=window,
+                        ),
+                    )
+                    adapter.handle_event(
+                        WindowsKeyEvent(
+                            VK_TAB,
+                            is_key_down=False,
+                            foreground_window=window,
+                        ),
+                    )
+                logger.info("程序退出")
+                for handler in logger.handlers:
+                    handler.flush()
+
+                log_text = log_path.read_text(encoding="utf-8")
+            finally:
+                close_logging(logger)
+
+        self.assertNotIn("/fs", log_text)
+        self.assertNotIn("()/()", log_text)
+        self.assertNotIn("8123", log_text)
+        self.assertNotIn("Tab", log_text)
 
 
 if __name__ == "__main__":
